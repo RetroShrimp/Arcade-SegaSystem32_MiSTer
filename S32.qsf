@@ -1,0 +1,113 @@
+# --------------------------------------------------------------------------
+#
+#  Sega System 32 - MiSTer FPGA core, Quartus Prime 17.0.2 Lite.
+#
+#  WARNING: do NOT add files from the Quartus GUI - it rewrites this file.
+#  Every source file belongs in files.qip.
+#
+#  All MiSTer board pin/IO assignments come from sys/sys.tcl and
+#  sys/sys_analog.tcl (the framework owns them); this file only carries
+#  project-wide settings. A compile may write the expanded pin list back
+#  into this file; restore this short form (the last lines are the three
+#  instance assignments below `source files.qip`).
+#
+#  The project is S32.qpf and its revision is `S32`, so
+#  `quartus_sh --flow compile S32` emits output_files/S32.rbf, matching the
+#  MRAs' <rbf>S32</rbf>.
+#
+# --------------------------------------------------------------------------
+
+set_global_assignment -name TOP_LEVEL_ENTITY sys_top
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
+
+set_global_assignment -name GENERATE_RBF_FILE ON
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name SAVE_DISK_SPACE OFF
+set_global_assignment -name SMART_RECOMPILE ON
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
+set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
+set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
+set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
+set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
+set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
+set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
+set_global_assignment -name OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"
+set_global_assignment -name ALLOW_POWER_UP_DONT_CARE ON
+set_global_assignment -name QII_AUTO_PACKED_REGISTERS NORMAL
+set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+# Register retiming stays OFF: it renames the registers it moves, which
+# silently unhooks the register-name-scoped multicycle exceptions in S32.sdc.
+# Register duplication is safe (the copies keep their base names).
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
+# jt12's CSR shift registers would otherwise pack into MLABs whose address
+# counters can miss hold inside one LAB; plain register chains are hold-safe.
+set_global_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -entity jt12_sh_rst
+set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED
+set_global_assignment -name MUX_RESTRUCTURE ON
+set_global_assignment -name REMOVE_REDUNDANT_LOGIC_CELLS ON
+set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC_FOR_AREA ON
+set_global_assignment -name ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP ON
+set_global_assignment -name SYNTH_GATED_CLOCK_CONVERSION ON
+set_global_assignment -name PRE_MAPPING_RESYNTHESIS ON
+set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
+set_global_assignment -name ECO_OPTIMIZE_TIMING ON
+set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
+set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
+# The release bitstream was fitted with seed 1. The worst path on this design
+# is in the framework's HDMI scaler (ascal), not the core; if a source change
+# leaves that clock slightly negative, try another seed.
+set_global_assignment -name SEED 1
+
+# This tree is the release configuration of the core: the sources carry no
+# configuration switches, so no core VERILOG_MACRO is needed here. The lines
+# below are the MiSTer framework's own options.
+
+#set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+
+#enable it only if 8bit indexed mode is used in core
+#set_global_assignment -name VERILOG_MACRO "MISTER_FB_PALETTE=1"
+
+#do not enable DEBUG_NOHDMI in release!
+#set_global_assignment -name VERILOG_MACRO "MISTER_DEBUG_NOHDMI=1"
+
+# disable bilinear filtering when downscaling
+set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
+
+# disable adaptive scanline filtering
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
+
+#use only 1MB per frame for scaler to free ~21MB DDR3 RAM
+set_global_assignment -name VERILOG_MACRO "MISTER_SMALL_VBUF=1"
+
+# Disable YC / Composite output to save some resources
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
+
+# Disable ALSA audio output to save some resources
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"
+
+source sys/sys.tcl
+source sys/sys_analog.tcl
+source files.qip
+
+# HDMI-domain framework pipelines (shadowmask, vga_out) are only a few taps
+# deep; extracted as shift registers they become MLABs whose address counters
+# can miss hold. Kept as plain registers.
+set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "shadowmask:HDMI_shadowmask"
+set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "vga_out:vga_out"
+set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "vga_out:vga_scaler_out"
+
+# The scaler's end-of-line enable (ascal.vhd, `o_hcpt+1 < o_htotal`) drives the
+# four vertical-counter stages at once (fanout 48); limiting its fanout keeps
+# the HDMI clock's worst path positive. The node name is synthesis-generated:
+# if sys/ is updated and this stops binding, check the HDMI clock's top paths.
+set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt_pre2[3]~0"

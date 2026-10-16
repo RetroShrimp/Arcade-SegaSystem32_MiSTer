@@ -1,0 +1,103 @@
+# Source list for the Sega System 32 MiSTer core.
+# Copyright (C) 2026 RetroShrimp. GPL-3.0-or-later; see LICENSE and NOTICE.md.
+#
+# Add source files here, never through the Quartus GUI. sys/ (the MiSTer
+# framework) is pulled in by sys/sys.tcl from S32.qsf.
+
+set_global_assignment -name SDC_FILE S32.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE S32.sv
+
+set_global_assignment -name QIP_FILE rtl/pll.qip
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_board.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v60bus.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v60fetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_zromcache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_ddrload.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_mromcache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_tdp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sdp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_intctl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_io5296.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_i8255.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v25.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/mb8421.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/eeprom_93c46.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_ldec.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_ea.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_shifter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_muldiv.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_bcu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v60/v60_pfu.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_mixer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_clip.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_sprite.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_sprite_top.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_text_live.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_bitmap_live.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_nbg_rowscroll_live.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_nbg_zoom_live.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_crt_adjust.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_soundtop.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_sound.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_sndint.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_pcm.sv
+
+set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80s.v
+set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80_core.v
+set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80_alu.v
+set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80_mcode.v
+set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80_reg.v
+
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_top.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_csr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_dout.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_final.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_pure.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_step.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_exprom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_kon.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_lfo.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_logsin.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_mmr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_mod.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_op.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pcm_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_dt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_inc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_sum.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_reg_ch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh24.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_single_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sumch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_timers.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_div.v
+
+# board-level caches, frame buffer and the DDR3 ROM loader
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_vramcache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_fbddr.sv
