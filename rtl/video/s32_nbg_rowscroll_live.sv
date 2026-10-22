@@ -10,7 +10,7 @@
 //   rowscroll (enable r04[bg-2]): srcx += Htable[ylookup] & 0x3FF
 //   rowselect (enable r04[bg]):   srcy  = (yscroll + Vtable[ylookup]) & 0x1FF
 //   inhibit  (r04[bg+2]) turns both off; table base = (r04 >> 10) * 0x400
-//   flip: ylookup = 223 - line, srcx runs right to left
+//   flipy: ylookup = 223 - line; flip: srcx runs right to left
 //
 // Line windows (MAME after 0.288, mamedev/mame#16038, compute_clipping_
 // extents): when the inhibit bit is set (r04[4] NBG2 / r04[5] NBG3), the two
@@ -58,11 +58,21 @@ module s32_nbg_rowscroll_live (
     input  logic [15:0] center_x,      // $31FF38/3C
     input  logic [15:0] r04,           // $31FF04 (table base + enables)
     input  logic [1:0]  bank,
-    input  logic        flip,          // layer flip XOR global flip
+    input  logic        flip,          // X flip: layer flip XOR global flip
+    // Y flip: global flip XOR (layer flip unless $31FF00 bit 8 prohibits
+    // the per-layer Y flip) — MAME master compute_tilemap_flips; svf's
+    // match mode runs NBG2 with $31FF00 = 0104 (X-only layer flip)
+    input  logic        flipy,
     input  logic        gflip,         // $31FF00 bit 9 (line-window table index)
 
     // row-transfer walk port (shared VRAM port B, granted by the arbiter)
     input  logic        row_start,
+    // walk_en = this layer is enabled (s32_video lay_en). When 0 the VRAM
+    // walk and the pattern prefetch are skipped (their data can never
+    // reach the screen), but every per-line latch still runs on
+    // row_start, so the layer resumes exactly when re-enabled
+    // (2026-10-19, docs/svf-bringup.md section 6.8).
+    input  logic        walk_en,
     input  logic        vr_ok,        // walk grant, not paused
     output logic        vr_busy,
     output logic        vr_re,        // = vr_busy
@@ -185,11 +195,12 @@ module s32_nbg_rowscroll_live (
             if (row_start) begin
                 pg[0] <= page_a; pg[1] <= page_b;
                 pg[2] <= page_c; pg[3] <= page_d;
-                ylookup <= flip ? (8'd223 - line) : line;
+                ylookup <= flipy ? (8'd223 - line) : line;
                 // window mode indexes the table by the GLOBAL flip only
                 // (MAME `line = flip ? visarea.max_y - y : y`)
-                tlookup <= (win_en ? gflip : flip) ? (8'd223 - line) : line;
-                wst     <= read_h ? W_TH
+                tlookup <= (win_en ? gflip : flipy) ? (8'd223 - line) : line;
+                wst     <= !walk_en ? W_IDLE
+                         : read_h ? W_TH
                          : read_v ? W_TV : W_SET;
             end else if (vr_ok) begin
                 unique case (wst)
@@ -287,10 +298,10 @@ module s32_nbg_rowscroll_live (
             pf_run <= 1'b0; pf_adv <= 1'b0;
             pf_done_r <= 1'b1; pf_pend <= 1'b0;
         end else if (row_start) begin
-            pf_pend   <= 1'b1;
+            pf_pend   <= walk_en;     // no prefetch for a disabled layer
             pf_run    <= 1'b0;
             pf_adv    <= 1'b0;
-            pf_done_r <= 1'b0;
+            pf_done_r <= !walk_en;
         end else if (pf_pend && wst == W_IDLE) begin
             pf_x    <= srcx0;
             pf_dot  <= 9'd0;

@@ -30,7 +30,8 @@ its ROM address-line scramble (`rtl/sys32/s32_v25.sv`, from
 ## Trademarks and content
 
 This repository contains no ROM data, no artwork, no manuals and no schematic
-scans. *Golden Axe*, *Holosseum* and *System 32* are trademarks of SEGA;
+scans. *Golden Axe*, *Holosseum*, *Super Visual Football*, *Super Visual
+Soccer* and *System 32* are trademarks of SEGA;
 *Spider-Man* is a trademark of Marvel. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled
 to.

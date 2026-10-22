@@ -38,7 +38,11 @@ module s32_nbg_zoom_live (
     input  logic [15:0] center_x,
     input  logic [15:0] center_y,
     input  logic [1:0]  bank,
-    input  logic        flip,
+    input  logic        flip,          // X flip: layer flip XOR global flip
+    // Y flip: global flip XOR (layer flip unless $31FF00 bit 8 prohibits
+    // the per-layer Y flip) — MAME master compute_tilemap_flips; svf's
+    // match mode runs NBG2 with $31FF00 = 0104 (X-only layer flip)
+    input  logic        flipy,
     // cabinet vertical mirror (s32_video cab_vmirror): the beam presents the
     // lines in reverse order, so the srcy DDA must run bottom-up — the Y half
     // of the global-flip formula, without the X half. Latched at init.
@@ -48,6 +52,12 @@ module s32_nbg_zoom_live (
     // per-line control
     input  logic [7:0]  line,          // walk target line (selects the bank)
     input  logic        row_start,     // ROW_XFER pulse: latch vy, step DDA, walk
+    // walk_en = this layer is enabled (s32_video lay_en). When 0 the VRAM
+    // walk and the pattern prefetch are skipped (their data can never
+    // reach the screen), but every per-line latch still runs on
+    // row_start, so the layer resumes exactly when re-enabled
+    // (2026-10-19, docs/svf-bringup.md section 6.8).
+    input  logic        walk_en,
     input  logic        line_start,    // beam stream start (HBLANK, BF_FSTART)
 
     // row-transfer walk port (shared VRAM port B, granted by the arbiter)
@@ -90,7 +100,7 @@ module s32_nbg_zoom_live (
     logic [6:0]  pg [0:3];
     logic [1:0]  bank_q;
     logic        flip_q;
-    logic        yflip_q;              // flip ^ vmirror: Y DDA direction
+    logic        yflip_q;              // flipy ^ vmirror: Y DDA direction
     logic [31:0] sxstep, systep;       // unsigned step magnitudes (12.20)
     logic [31:0] srcx0;                // per-line X start
     logic [31:0] srcy_acc;             // accumulated Y (per line)
@@ -172,7 +182,7 @@ module s32_nbg_zoom_live (
         end else begin
             st_p <= 1'b0;
             if (st_p) nrow[{walk_bank, st_idx}] <= vr_rdata;
-            if (row_start && (state == Z_READY || state == Z_RUN)) begin
+            if (row_start && walk_en && (state == Z_READY || state == Z_RUN)) begin
                 widx    <= 7'd0;
                 walking <= 1'b1;
             end else if (walking && vr_ok) begin
@@ -203,9 +213,9 @@ module s32_nbg_zoom_live (
         end else if (row_start && (state == Z_READY || state == Z_RUN)) begin
             pf_srcx   <= srcx0;
             pf_dot    <= 9'd0;
-            pf_run    <= 1'b1;
+            pf_run    <= walk_en;     // no prefetch for a disabled layer
             pf_adv    <= 1'b0;
-            pf_done_r <= 1'b0;
+            pf_done_r <= !walk_en;
         end else if (pf_run && pf_adv) begin
             if (pf_ccol != pf_from) pf_adv <= 1'b0;          // landed
             else if (pf_dot == 9'd319) begin                 // sequence done
@@ -295,7 +305,7 @@ module s32_nbg_zoom_live (
             pg[2] <= page_c; pg[3] <= page_d;
             bank_q <= bank;
             flip_q <= flip;
-            yflip_q <= flip ^ vmirror;
+            yflip_q <= flipy ^ vmirror;
             ready  <= 1'b0;
             dden <= (dstxstep < 12'h80) ? 12'h80 : dstxstep;
             dnum <= 30'h2000_0000;

@@ -18,6 +18,19 @@
 // The erase sweep covers the buffer width x 224 at one pixel per cycle.
 // The real chip's erase and draw times are not documented; status reads 1
 // (normal), or 2 while the engine is still busy at the next trigger.
+//
+// Manual mode: a trigger that finds the previous render still running ends
+// it (2026-10-20, docs/svf-bringup.md 6.10, OPEN-QUESTIONS Q41). s32tech's
+// $500002 status 2 is "rendering time is over but end-of-list command not
+// read yet": the real chip renders inside a time window and stops when it
+// closes; it does not carry a list into the next frame. MAME renders each
+// trigger's list in full, instantly. Before this, the trigger swapped and
+// erased while the old walk kept running (its start for the new list was
+// ignored by the busy engine), so svf's one-frame garbage list (a cleared
+// list buffer that runs on into a data table, ~912k pixels) cascaded over
+// four triggers and showed as stripes and an empty frame in the replay
+// banner's fade-in. Auto mode keeps its own policy below (skip one tick,
+// then the watchdog), which only ever triggers from W_IDLE.
 
 module s32_sprite_top (
     input  logic        clk,
@@ -88,6 +101,7 @@ module s32_sprite_top (
     logic [8:0]  er_w;
     logic        er_disp;              // erase DISPLAYED buffer (cmd 02)
     logic        ovr_hold;             // one auto tick already skipped busy
+    logic        restart_pend;         // manual time-out: start after abort
 
     assign render_busy = (wst != W_IDLE) || eng_busy;
 
@@ -260,9 +274,11 @@ module s32_sprite_top (
             er_pend <= 1'b0;
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
+            restart_pend <= 1'b0;
         end else if (cen) begin
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
+            restart_pend <= 1'b0;
 
             // triggers
             if (trig_swap) begin
@@ -273,14 +289,23 @@ module s32_sprite_top (
                 l0a <= r0a;
                 l0c <= r0c;
             end
+            if (restart_pend) eng_start <= 1'b1;   // engine idle now
             if (trig) begin
+                // manual time-out (header): only a manual trigger can find
+                // the engine busy, since auto triggers need W_IDLE. The
+                // engine honors abort before start, so a render that needs
+                // no erase starts on the next cycle.
+                if (eng_busy) eng_abort <= 1'b1;
                 er_pend <= trig_erase_hidden;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
                 er_w <= r0c ? 9'd415 : 9'd319;
                 er_disp <= 1'b0;
                 if (trig_erase_hidden) wst <= W_ERASE;
-                else begin
+                else if (eng_busy) begin
+                    restart_pend <= 1'b1;
+                    wst <= W_RENDER;
+                end else begin
                     eng_start <= 1'b1;
                     wst <= W_RENDER;
                 end
@@ -324,7 +349,7 @@ module s32_sprite_top (
             end
 
             // render completion
-            if (wst == W_RENDER && !eng_busy && !eng_start)
+            if (wst == W_RENDER && !eng_busy && !eng_start && !restart_pend)
                 wst <= W_IDLE;
         end
     end

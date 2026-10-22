@@ -34,6 +34,12 @@ module s32_text_live (
 
     // row-transfer walk port (shared VRAM port B, granted by the arbiter)
     input  logic        row_start,
+    // walk_en = this layer is enabled (s32_video lay_en). When 0 the VRAM
+    // walk and the pattern prefetch are skipped (their data can never
+    // reach the screen), but every per-line latch still runs on
+    // row_start, so the layer resumes exactly when re-enabled
+    // (2026-10-19, docs/svf-bringup.md section 6.8).
+    input  logic        walk_en,
     input  logic        vr_ok,        // walk grant, not paused
     output logic        vr_busy,
     output logic        vr_re,        // = vr_busy
@@ -159,7 +165,7 @@ module s32_text_live (
                 ftx       <= 6'd0;
                 rv[walk_bank_nx] <= 1'b0;   // the bank being (re)filled
                 cap       <= C_NONE;
-                wst       <= W_N0;     // begin the row transfer
+                wst       <= walk_en ? W_N0 : W_IDLE;  // begin the row transfer
             end else if (vr_ok) begin
                 unique case (wst)
                     W_N0:  begin cap <= C_N0;  wst <= W_N1;  end

@@ -501,7 +501,8 @@ module s32_video (
         .clk(clk), .rst(rst),
         .cen_pix(bf_pix),
         .line_start(bf_ls), .line(row_line), .r5c(vreg(8'h5C)),
-        .row_start(row_start), .vr_ok(row_gnt[0] && cen_r && !rnd_stall),
+        .row_start(row_start), .walk_en(lay_en[0]),
+        .vr_ok(row_gnt[0] && cen_r && !rnd_stall),
         .vr_busy(tw_busy), .vr_re(),
         .vr_addr(tw_vaddr), .vr_rdata(vram_q_rnd),
         .pix(tl_pix), .pix_valid(tl_pix_valid),
@@ -706,8 +707,10 @@ module s32_video (
                 .center_x(vreg(8'h30 + 8'(4*zli))),
                 .center_y(vreg(8'h32 + 8'(4*zli))),
                 .bank({tilebank_ext, r00[10]}), .flip(r00[9] ^ r00[zli]),
+                .flipy(r00[9] ^ (r00[zli] & ~r00[8])),
                 .vmirror(cab_vmirror),
-                .row_start(row_start), .line_start(bf_ls),
+                .row_start(row_start), .walk_en(lay_en[1 + zli]),
+                .line_start(bf_ls),
                 .vr_ok(row_gnt[1 + zli] && cen_r && !rnd_stall),
                 .vr_busy(zw_busy[zli]), .vr_re(),
                 .vr_addr(zw_vaddr[zli]), .vr_rdata(vram_q_rnd),
@@ -743,8 +746,9 @@ module s32_video (
                 .center_x(vreg(8'h38 + 8'(4*rli))),
                 .r04(vreg(8'h04)),
                 .bank({tilebank_ext, r00[10]}), .flip(r00[9] ^ r00[2 + rli]),
+                .flipy(r00[9] ^ (r00[2 + rli] & ~r00[8])),
                 .gflip(r00[9]),
-                .row_start(row_start),
+                .row_start(row_start), .walk_en(lay_en[3 + rli]),
                 .vr_ok(row_gnt[3 + rli] && cen_r && !rnd_stall),
                 .vr_busy(rw_busy[rli]), .vr_re(),
                 .vr_addr(rw_vaddr[rli]), .vr_rdata(vram_q_rnd),
@@ -768,7 +772,17 @@ module s32_video (
         .clk(clk), .rst(rst), .cen_pix(bf_pix),
         .line_start(bf_ls), .line(row_line), .bpp8(r00[11]),
         .r88(vreg(8'h88)), .r8a(vreg(8'h8A)), .r8c(vreg(8'h8C)),
-        .row_start(row_start), .vr_ok(row_gnt[5] && cen_r && !rnd_stall),
+        // A disabled bitmap layer is not walked (2026-10-19). Its rows can
+        // never reach the screen (lay_en[5] masks it in the mixer, as MAME's
+        // enableb does), but its walk is the heaviest VRAM reader and it took
+        // the VRAM-over-SDRAM bandwidth the visible layers need: svf's match
+        // mode ($31FF02 = 6320, bitmap off) failed ROWWALK and PBWITNESS
+        // with the bitmap walk the straggler on every late line. The enable
+        // is sampled at the walk (the line before display), so a bitmap
+        // turned ON mid-frame would show one stale row; no supported game
+        // does that (docs/svf-bringup.md section 6.6).
+        .row_start(row_start && lay_en[5]),
+        .vr_ok(row_gnt[5] && cen_r && !rnd_stall),
         .vr_busy(bw_busy), .vr_re(),
         .vr_addr(bw_vaddr), .vr_rdata(vram_q_rnd),
         .pf_hint_addr(), .pf_hint_vld(), .pf_hint_take(1'b0),

@@ -66,7 +66,10 @@ module v60 (
         S_STR_END1, S_STR_END2,
         S_XCP_SBR, S_XCP_VEC, S_XCP_P1, S_XCP_P2, S_XCP_P3,
         S_DVX_RD, S_DVX_WB,
-        S_TRAP
+        S_TRAP,
+        // appended AFTER S_TRAP so every pre-existing state keeps its
+        // encoding (HUD/bench prints of dut.u_v60.state stay comparable)
+        S_STR_FILL
     } state_e;
     state_e state;
 
@@ -394,7 +397,8 @@ module v60 (
     assign op1_addr_only =
         (exec_q == 8'd19) || (exec_q == 8'd25) || (exec_q == 8'd26) ||
         (exec_q >= 8'd50 && exec_q <= 8'd52) ||  // movcu/movcd/skpcu
-        (exec_q == 8'd61);                       // cmpc: src string address
+        (exec_q == 8'd61) ||                     // cmpc: src string address
+        (exec_q == 8'd62);                       // movcfu: src string address
 
     // op2 old value needed from MEMORY (RMW, bit ops, xch, updpsw, test1);
     // register destinations always read via the port (width merge), which
@@ -495,6 +499,8 @@ module v60 (
     // string-op working registers (movcu/movcd/skpcu/schcu/cmpc)
     logic [1:0]  str_mode;            // 0 = up-copy, 1 = down-copy, 2 = scan,
                                       // 3 = compare (cmpc)
+    logic        str_fill;            // movcfu: up-copy, then fill the rest
+                                      // of dst with R26 (S_STR_FILL)
     logic [31:0] str_c1;              // cmpc: src element awaiting its dst
     logic        str_search;          // scan polarity: 0 = skip (stop on !=),
                                       // 1 = search (stop on ==)  [schcu]
@@ -688,6 +694,11 @@ module v60 (
             S_STR_RD2: begin                        // cmpc: dst element
                 mem_re = 1'b1; mem_addr = str_a2;
                 mem_size = str_elem[2:0];
+            end
+            S_STR_FILL: begin                       // movcfu: dst[i] = R26
+                ra_a = 5'd26;
+                mem_we = 1'b1; mem_addr = str_a2;
+                mem_size = str_elem[2:0]; mem_wdata = rd_a;
             end
             S_PUSHM: begin
                 ra_a = mask_idx[4:0];
@@ -1002,7 +1013,7 @@ module v60 (
                                     | (op1_val & op2_val & pswm2(b0));
                                 pc <= next_seq_pc; state <= S_FETCH;
                             end
-                            8'd50, 8'd51, 8'd52, 8'd55, 8'd61: begin
+                            8'd50, 8'd51, 8'd52, 8'd55, 8'd61, 8'd62: begin
                                 // movcu/movcd/skpcu/schcu — schcu (55) is
                                 // the skip scan with inverted match
                                 // polarity (stop on ==, not !=); identical
@@ -1011,10 +1022,14 @@ module v60 (
                                 // cmpc (61) walks both strings upward like
                                 // movcu, reading instead of writing the dst
                                 // (mode 3, S_STR_RD2/S_STR_CMP).
-                                str_mode <= (exec_q == 8'd50) ? 2'd0
+                                // movcfu (62) is movcu plus a fill phase:
+                                // mode 0 with str_fill (S_STR_FILL).
+                                str_mode <= (exec_q == 8'd50 ||
+                                             exec_q == 8'd62) ? 2'd0
                                           : (exec_q == 8'd51) ? 2'd1
                                           : (exec_q == 8'd61) ? 2'd3 : 2'd2;
                                 str_search <= (exec_q == 8'd55);
+                                str_fill <= (exec_q == 8'd62);
                                 str_base1 <= op1_ea_q;
                                 str_base2 <= op2_ea_q;
                                 str_elem <= (s2_q == 2'd1) ? 32'd2 : 32'd1;
@@ -1199,7 +1214,11 @@ module v60 (
                                 flags_wdata <= {psw[3:2], str_cnt > str_len2,
                                                 str_cnt == str_len2};
                             end
-                            state <= S_STR_END1;
+                            // movcfu with nothing to copy can still have
+                            // a whole dst to fill (svf's boot RAM clear is
+                            // exactly that: slen 0, dlen 0x7FFE)
+                            state <= (str_fill && str_cnt < str_len2)
+                                     ? S_STR_FILL : S_STR_END1;
                         end else
                             state <= S_STR_RD;
                     end
@@ -1230,8 +1249,9 @@ module v60 (
                     end else begin
                         // copy: write happened combinationally this cycle
                         str_i <= str_i + 32'd1;
-                        state <= (str_i + 32'd1 == str_dest) ? S_STR_END1
-                                                             : S_STR_RD;
+                        state <= (str_i + 32'd1 != str_dest) ? S_STR_RD
+                               : (str_fill && str_cnt < str_len2)
+                                 ? S_STR_FILL : S_STR_END1;
                     end
                 end
                 S_STR_RD2: state <= S_STR_CMP;
@@ -1263,10 +1283,25 @@ module v60 (
                         state <= S_STR_RD;
                     end
                 end
+                S_STR_FILL: begin
+                    // MOVCF (NEC V60 manual p.7-57, Move Character with
+                    // Filler): positions min(slen,dlen)..dlen-1 of dst get
+                    // the fill character in R26 (its low byte/halfword);
+                    // flags unchanged. Write happened combinationally this
+                    // cycle. MAME opMOVSTRUB/UH(bFill=1, bStop=0),
+                    // op7a.hxx, agrees: fill only when slen < dlen.
+                    str_i <= str_i + 32'd1;
+                    if (str_i + 32'd1 == str_len2) state <= S_STR_END1;
+                end
                 S_STR_END1: begin                   // R28 = final src pointer
                     wen <= 1'b1; waddr <= 5'd28;
                     unique case (str_mode)
-                        2'd0: wdata <= str_base1 + str_i * str_elem;
+                        // movcfu: str_i has run on through the fill, but
+                        // R28 is the next SOURCE element = src + min*elem
+                        // (manual "address of the next logical character";
+                        // MAME R28 = m_op1 + i taken before the fill loop)
+                        2'd0: wdata <= str_base1
+                            + (str_fill ? str_dest : str_i) * str_elem;
                         2'd1: wdata <= str_base1
                             + (str_cnt - str_i - 32'd1) * str_elem;
                         default: wdata <= str_base1 + str_i * str_elem;

@@ -174,9 +174,12 @@ wire reset_req = RESET | status[0] | buttons[1];
 reg  rst_ctrl_r = 1;
 always @(posedge clk_sys) rst_ctrl_r <= ~pll_locked | RESET;
 
+// ld_wait: a DDR3 fast load is pending, waiting for the frame buffer side
+// to go quiet (see ddr_start_pend below); keep the core in reset meanwhile
+wire ld_wait;
 reg  [15:0] core_hold = 16'hFFFF;
 always @(posedge clk_sys) begin
-	if (reset_req | ioctl_download | rst_ctrl_r | ddr_busy_l)
+	if (reset_req | ioctl_download | rst_ctrl_r | ddr_busy_l | ld_wait)
 		core_hold <= 16'hFFFF;
 	else if (core_hold != 0)
 		core_hold <= core_hold - 1'd1;
@@ -262,6 +265,26 @@ end
 // arrives as 1 and must not trigger.
 wire ddr_start = dl_q && !ioctl_download && ioctl_index == 0
                  && dl_bytes == 0 && ioctl_addr > 27'd1;
+// The loader takes the shared DDRAM port only once the sprite frame buffer
+// side has finished the transaction it was in when the download reset it
+// (s32_fbddr header: a half-finished burst wedges f2sdram until power-off).
+// rst_core is already held from the download's start, so this waits a few
+// hundred clk at most.
+wire fbddr_quiet;
+reg  ddr_start_pend = 0;
+reg [26:0] ddr_len_q = 0;
+always @(posedge clk_sys) begin
+	if (rst_ctrl_r)
+		ddr_start_pend <= 0;
+	else if (ddr_start) begin
+		ddr_start_pend <= 1;
+		ddr_len_q      <= ioctl_addr[26:0] - 27'd1;
+	end else if (ddr_start_pend && fbddr_quiet)
+		ddr_start_pend <= 0;
+end
+wire        ddr_go_ld  = ddr_start_pend && fbddr_quiet;
+assign ld_wait = ddr_start_pend;
+wire [26:0] ddr_len_ld = ddr_len_q;
 
 // loader-side DDRAM signals, muxed onto the pins above
 wire  [7:0] ld_ddr_burstcnt;
@@ -277,7 +300,7 @@ wire [26:0] ddr_offs;
 wire  [7:0] ddr_byte;
 s32_ddrload ddrload (
 	.clk(clk_sys), .rst(rst_ctrl_r),
-	.start(ddr_start), .length(ioctl_addr[26:0] - 27'd1),
+	.start(ddr_go_ld), .length(ddr_len_ld),
 	.busy(ddr_busy_l), .done(ddr_done),
 	.dv(ddr_dv), .doffs(ddr_offs), .dbyte(ddr_byte),
 	.stall(ld_pend || ld_wr),
@@ -470,6 +493,7 @@ s32_board board
 	// The sprite frame buffers' DDR3 port. `go` waits for the loader to
 	// release DDR3 and for the core to leave reset.
 	.fbddr_go(!ddr_busy_l && !rst_core),
+	.fbddr_quiet(fbddr_quiet),
 	.ddr_busy(DDRAM_BUSY || ddr_busy_l),
 	.ddr_rd(fb_ddr_rd), .ddr_we(fb_ddr_we),
 	.ddr_addr(fb_ddr_addr), .ddr_burstcnt(fb_ddr_burstcnt),

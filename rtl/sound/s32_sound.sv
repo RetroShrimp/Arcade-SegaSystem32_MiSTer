@@ -11,7 +11,8 @@
 // 8KB pages over the 4MB region), C000-DFFF RF5C68 window (external),
 // E000-FFFF shared RAM (dual-ported to the V60 side).
 // I/O: 80-8F YM1, 90-9F YM2, A0-AF/B0-BF bank, C0-CF int-lo,
-// D0-DF int-hi, F1 dummy.
+// D0-D7 int-hi (D0-D3 mirrored at D4-D7; D8-DF unknown, writes dropped),
+// F1 dummy.
 //
 // Clocking: cen paces the Z80 (8.053975 MHz = 32.2159 MHz / 4). The ROM
 // is read through s32_zromcache, which stalls cen on a miss.
@@ -142,7 +143,16 @@ module s32_sound (
         .clk(clk), .rst(rst),
         .lo_we(io_we && A[7:4] == 4'hC), .lo_off(A[3:0]),
         .lo_data(dout),
-        .hi_we(io_we && A[7:4] == 4'hD), .hi_off(A[1:0]),
+        // D0-D3 mirrored at D4-D7 only. s32tech "Port mirroring": "The
+        // interupt control registers at $D0-$D3 are mirrored at $D4-D7. The
+        // registers at $D8-$DF are unknown (used in some games, $D8 is
+        // initialized to $0B or $06)"; MAME maps 0xd0-0xd3 mirror 0x04 and
+        // leaves D8-DF unmapped. Decoding all of D0-DF on A[1:0] aliased
+        // D8 onto D0: Super Visual Football's driver writes D0<-00 (vector 0
+        // = YM timer) then D8<-0B, which overwrote vector 0's source, so the
+        // YM timer never interrupted the Z80 and the game was silent
+        // (2026-10-18). D8-DF writes are dropped here (OPEN-QUESTIONS Q42).
+        .hi_we(io_we && A[7:3] == 5'b11010), .hi_off(A[1:0]),
         .hi_data(dout),
         .ym_irq(ym_irq), .v60_cmd(v60_cmd),
         .int_n(int_n), .int_vector(int_vector),

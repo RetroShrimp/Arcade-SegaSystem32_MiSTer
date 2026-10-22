@@ -24,8 +24,11 @@ module s32_board (
     input  logic        rst_ctrl,     // controller/pin reset
 
     // ---- DDR3 port for the sprite frame buffers. The ROM loader uses DDR3
-    // only while rst_core is held, so S32.sv simply muxes the two.
+    // only while rst_core is held, so S32.sv muxes the two -- but only once
+    // fbddr_quiet says the frame buffer side has finished the transaction it
+    // was in when rst_core arrived (s32_fbddr header).
     input  logic        fbddr_go,
+    output logic        fbddr_quiet,
     input  logic        ddr_busy,
     output logic        ddr_rd,
     output logic        ddr_we,
@@ -233,12 +236,34 @@ module s32_board (
     localparam logic [24:1] B_FB   = 24'hB00000;   // byte 0x1600000
 
     // ------------------------------------------------ port adapters
-    // ---- port 4: V60 instruction fetch — line req/done wires
-    //      straight through (V60 ROM base is word 0)
-    assign rreq[4]  = frf_req;
-    assign raddr[4] = {4'd0, frf_line, 3'b000};
-    assign frf_data = rdata;
-    assign frf_done = rdone[4];
+    // ---- V60 ROM line caches (s32_romlc header, 2026-10-21): the fetch
+    //      and data-read adapters refill from a 4 KB line cache, and only
+    //      its misses reach SDRAM. The real EPROMs cost only the bus
+    //      cycles v60_bcu models; an SDRAM round trip per jump does not.
+    logic         frf_dn_req, frf_dn_done;
+    logic [20:4]  frf_dn_line;
+    s32_romlc u_frf_lc (
+        .clk(clk), .rst(rst_core),
+        .up_req(frf_req), .up_line(frf_line),
+        .up_data(frf_data), .up_done(frf_done),
+        .dn_req(frf_dn_req), .dn_line(frf_dn_line),
+        .dn_data(rdata), .dn_done(frf_dn_done)
+    );
+    logic         drf_dn_req, drf_dn_done;
+    logic [20:4]  drf_dn_line;
+    s32_romlc u_drf_lc (
+        .clk(clk), .rst(rst_core),
+        .up_req(drf_req), .up_line(drf_line),
+        .up_data(drf_data), .up_done(drf_done),
+        .dn_req(drf_dn_req), .dn_line(drf_dn_line),
+        .dn_data(rdata), .dn_done(drf_dn_done)
+    );
+
+    // ---- port 4: V60 instruction fetch — the fetch cache's misses
+    //      (V60 ROM base is word 0)
+    assign rreq[4]  = frf_dn_req;
+    assign raddr[4] = {4'd0, frf_dn_line, 3'b000};
+    assign frf_dn_done = rdone[4];
 
     // =============================================== tile ROM cache
     // One burst = 16 bytes = two 8-byte pattern rows. The served row is
@@ -695,7 +720,7 @@ module s32_board (
             // the near-idle port 5 (see the p5_owner mux below): on port 1
             // it would wait out the V60's in-flight, NON-PREEMPTIBLE
             // transaction before it could even bid.
-            else if (drf_req)  p1_owner <= 2'd2;
+            else if (drf_dn_req)  p1_owner <= 2'd2;
         end else if (rdone[1])
             p1_owner <= 2'd0;
     end
@@ -707,13 +732,12 @@ module s32_board (
     // arbiter's g_addr capture directly (fit-stage path)
     always_ff @(posedge clk) begin
         rreq[1]  <= ((p1_owner == 2'd1) ? 1'b1
-                   : (p1_owner == 2'd2) ? drf_req
+                   : (p1_owner == 2'd2) ? drf_dn_req
                    : 1'b0) && !rst_ctrl;
         raddr[1] <= (p1_owner == 2'd1) ? {dr_addr[24:4], 3'b000}
-                                       : {4'd0, drf_line, 3'b000};
+                                       : {4'd0, drf_dn_line, 3'b000};
     end
-    assign drf_data = rdata;
-    assign drf_done = rdone[1] && (p1_owner == 2'd2);
+    assign drf_dn_done = rdone[1] && (p1_owner == 2'd2);
     assign vram_rf_data = rdata;   // shared read bus, port-independent
 
     // ============================================ ROM load + wb mux
@@ -784,7 +808,8 @@ module s32_board (
         .ddr_busy(ddr_busy), .ddr_rd(ddr_rd), .ddr_we(ddr_we),
         .ddr_addr(ddr_addr), .ddr_burstcnt(ddr_burstcnt),
         .ddr_din(ddr_din), .ddr_be(ddr_be),
-        .ddr_dout(ddr_dout), .ddr_dout_ready(ddr_dout_ready)
+        .ddr_dout(ddr_dout), .ddr_dout_ready(ddr_dout_ready),
+        .quiet(fbddr_quiet)
     );
 
     // ---- Z80 sound-ROM cache, on SDRAM read port 5. zc_hold stalls only

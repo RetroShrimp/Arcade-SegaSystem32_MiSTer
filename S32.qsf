@@ -66,7 +66,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
 # The release bitstream was fitted with seed 1. The worst path on this design
 # is in the framework's HDMI scaler (ascal), not the core; if a source change
 # leaves that clock slightly negative, try another seed.
-set_global_assignment -name SEED 1
+set_global_assignment -name SEED 7
 
 # This tree is the release configuration of the core: the sources carry no
 # configuration switches, so no core VERILOG_MACRO is needed here. The lines
@@ -108,6 +108,14 @@ set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "vga_out:v
 
 # The scaler's end-of-line enable (ascal.vhd, `o_hcpt+1 < o_htotal`) drives the
 # four vertical-counter stages at once (fanout 48); limiting its fanout keeps
-# the HDMI clock's worst path positive. The node name is synthesis-generated:
-# if sys/ is updated and this stops binding, check the HDMI clock's top paths.
+# the HDMI clock's worst path positive. The node name is synthesis-generated
+# and has moved between builds even with sys/ unchanged: if it stops binding
+# (no ~SynDup copies in the fit report), find the ascal "Clock enable" with
+# fan-out 48 in the fit report's Control Signals table and retarget it.
+set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt_pre3[0]~0"
+# 2026-10-19 (db1c379/3bec91b dev netlist): the enable came back as
+# o_vcpt_pre2[3]~0, unbound; seeds 1 and 7 then missed HDMI setup by
+# -0.052 / -0.375 ns. Same rule: carry every name a netlist has used.
 set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt_pre2[3]~0"
+# The same enable's name in the dev (HUD) netlist; binds nothing in this one.
+set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt[7]~0"

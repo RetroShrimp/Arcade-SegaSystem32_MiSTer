@@ -31,9 +31,14 @@
 //     may still be in the coalescer.
 //
 // Two gather buffers, so the engine can keep writing into one while the
-// other drains. The drainer only touches a sealed buffer (wsel != fill), and
-// fbw_ok refuses a write that would need a seal while the other buffer is
-// still busy.
+// other drains. The drainer only touches a sealed buffer, and fbw_ok refuses
+// a write that would need a seal while the other buffer is still busy. One
+// exception to "wsel != fill": a shadow barrier is accepted even when the
+// other buffer is busy. It seals the filling buffer and flips `fill` onto
+// the one draining, but sh_pend then blocks every write until both buffers
+// have drained, so nothing is pushed into a draining buffer. svf's match mode
+// does this constantly (shadowed players); the invariant asserted below is
+// therefore "no push into the draining buffer", not "fill != wsel".
 //
 // Avalon-MM protocol (through f2sdram_safe_terminator, DATA=64 BURST=8):
 //   read : rd + burstcnt + addr, held until a !busy cycle takes it; beats
@@ -42,6 +47,17 @@
 //          one beat per !busy cycle; we held for all beats.
 //   busy is waitrequest, sampled the same cycle as the request, so every
 //   request is held until a !busy cycle takes it.
+//
+// Reset never cuts a transaction. The f2sdram port has no reset of its own:
+// a write burst abandoned with beats still owed leaves it waiting for them
+// until the DE10 is power-cycled (the framework's f2sdram_safe_terminator
+// covers only the system reset, not rst_core). rst_core fires on OSD reset,
+// on every ROM download and on chk_busy, so on 2026-10-19 an OSD reset left
+// a gray/white screen, and every later ROM load hung on its DDR3 read with
+// no video at all. So rst only takes effect once the FSM is back in D_IDLE:
+// a burst in flight finishes first (a write with its own, valid data; a read
+// takes all its beats, so no stray beat can misalign the next line read),
+// and `quiet` tells S32.sv when the DDR3 loader may take the port.
 
 module s32_fbddr #(
     // byte 0x31000000 as a 64-bit-word address (the loader owns 0x30000000)
@@ -86,7 +102,8 @@ module s32_fbddr #(
     output logic [63:0]  ddr_din,
     output logic [7:0]   ddr_be,
     input  logic [63:0]  ddr_dout,
-    input  logic         ddr_dout_ready
+    input  logic         ddr_dout_ready,
+    output logic         quiet       // no transaction in flight (dst == D_IDLE)
 );
 
     // ---------------------------------------------------------------- map
@@ -145,7 +162,7 @@ module s32_fbddr #(
 
     // The engine stalls ONLY when a seal is required and the other buffer is
     // not free, or while a shadow barrier resolves, or before DDR is available.
-    assign fbw_ok = go && !sh_pend && !(need_seal && !other_free)
+    assign fbw_ok = go && !rst && !sh_pend && !(need_seal && !other_free)
                        && !(w_sh_raw && 1'b0);   // shadows are accepted, then
                                                  // block via sh_pend next cycle
 
@@ -197,6 +214,7 @@ module s32_fbddr #(
         D_IDLE, D_RD, D_RDW, D_WR, D_SHRD, D_SHW, D_SHWR
     } dst_e;
     dst_e dst;
+    assign quiet = (dst == D_IDLE);
 
     logic [6:0] rbeat;                        // 0..LBEATS-1
     logic [6:0] widx;                         // beat index within a burst
@@ -263,7 +281,8 @@ module s32_fbddr #(
         rf_stb  <= 1'b0;
         rf_done <= 1'b0;
 
-        if (rst) begin
+        // see the header: a reset waits for the transaction in flight
+        if (rst && dst == D_IDLE) begin
             dst       <= D_IDLE;
             acc_v     <= 1'b0;
             fill      <= 1'b0;

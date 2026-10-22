@@ -18,6 +18,49 @@
 // fb_shadow marks a bit-15-clear read-modify-write (shadow pen) for
 // the memory controller. Erase, swap and trigger sequencing live in
 // s32_sprite_top; `start` here renders one full list.
+//
+// Clipped work is skipped, not walked (OPEN-QUESTIONS Q40, 2026-10-19).
+// Pixels are exactly MAME draw_one_sprite's; only the time differs.
+//   - A sprite whose destination box misses the clip-in window entirely
+//     draws nothing and costs only its decode, divide and S_CLIP.
+//   - The trailing span past the clip edge is never walked: xtarget is
+//     clamped to it, exactly as MAME does.
+//   - The leading span before the clip edge is jumped. After k clipped
+//     destination pixels the zoom DDA sits at nibble floor(k*hzoom/2^16)
+//     with xacc = k*hzoom mod 2^16. That is one multiply per sprite
+//     (S_SKIPMUL). Each source word passed over entirely costs one read,
+//     to test its end code (S_SCAN; MAME ends the row there too). The row
+//     then resumes at the clip edge.
+// Rows outside the window already cost 2 ticks (S_ROW/S_ROW_NEXT).
+//
+// The source step rides the emitting tick (Q40, 2026-10-19). When a
+// destination pixel's xacc += hzoom crosses one source pixel inside a word,
+// S_PIX steps nib_i in that same tick instead of spending a second one. A
+// 1:1 or magnified sprite therefore costs one tick per destination pixel,
+// plus one at each word's last pixel (where the end-code test and the next
+// word fetch happen) and the word reads. Shrinks that cross several source
+// pixels still take one tick per extra source pixel. svf's goal replays are
+// ~190k visible px of mostly 1:1 sprites: at two ticks per pixel they cost
+// 1.14-1.18 frames on zero-wait memories even after the clip skip.
+//
+// Pattern words are prefetched (Q40, 2026-10-19, same day). While a sprite-
+// ROM word is being drawn, S_PIX reads the next one (pf_issue: one read for
+// curaddr+1, when at least two destination pixels remain); at the word's
+// last pixel the end-code test and the switch to the prefetched word happen
+// in the emitting tick. A 1:1 sprite is then exactly one tick per
+// destination pixel; without the prefetch each word cost S_WORD_RD +
+// S_WORD_WAIT + an unfused last-pixel step (3 ticks per 8 px at 4bpp, per
+// 4 px at 8bpp). svf's "GOAL!!" banner (~3x overdraw of 1:1 ROM sprites,
+// 8bpp flags) needed 98-99% of a frame on zero-wait memories with that
+// overhead, and two frames on the board. Sprite-RAM patterns (two 16-bit
+// reads per word) and the leading-span scan keep the S_WORD_RD path. A
+// prefetch issued for a word the row then never uses costs one extra read.
+// Super Visual Football is the reason: its match and replay lists place
+// huge sprites wholly or mostly off screen (a 675x178 stand at x = -893
+// and x = 681, every frame), 48-79% of all destination pixels. Walking them
+// one tick each cost up to 2.2 frames of 25 MHz engine time (a replay, on
+// zero-wait memories), which the real board evidently does not spend:
+// the game runs at full rate. docs/svf-bringup.md section 6.5.
 
 module s32_sprite (
     input  logic        clk,
@@ -73,7 +116,8 @@ module s32_sprite (
     typedef enum logic [3:0] {
         S_IDLE, S_PKT_RD, S_PKT_LAST, S_DECODE,
         S_LUT_RD, S_LUT_LAST, S_DIV, S_SETUP,
-        S_ROW, S_WORD_RD, S_WORD_WAIT, S_PIX, S_ROW_NEXT
+        S_ROW, S_WORD_RD, S_WORD_WAIT, S_PIX, S_ROW_NEXT,
+        S_CLIP, S_SKIPMUL, S_SCAN
     } state_e;
     state_e state;
 
@@ -126,6 +170,21 @@ module s32_sprite (
     logic [2:0]  nib_i;
     logic [7:0]  pix;
 
+    // leading-span skip (see the header): per sprite, k clipped destination
+    // pixels -> skip_words whole source words, starting nibble skip_nib0 and
+    // DDA remainder skip_xacc; per row, scan_left words still to scan
+    logic [9:0]  skip_k;
+    logic [19:0] skip_words;
+    logic [2:0]  skip_nib0;
+    logic [15:0] skip_xacc;
+    logic signed [12:0] skip_x;
+    logic [19:0] scan_left;
+    logic        first_word;          // next S_WORD_WAIT starts at skip_nib0
+
+    // pattern-word prefetch (header): pf_have = rom_rdata holds curaddr+1
+    logic        pf_have;
+    logic        pf_issue;
+
     always_comb begin
         if (bpp8)
             pix = word_q[31 - 8 * {1'b0, nib_i[1:0]} -: 8];
@@ -173,8 +232,13 @@ module s32_sprite (
             sr_addr = {curaddr[14:0], 1'b0} + {15'd0, word_half};
     end
 
-    assign rom_re = (state == S_WORD_RD) && !fromram;
-    assign rom_addr = {bank, curaddr};
+    // one prefetch per word, on an emitting tick with two or more
+    // destination pixels left in the row
+    assign pf_issue = (state == S_PIX) && !fromram && !pf_have
+                   && (xacc < 26'h10000) && (x != xtarget)
+                   && (x + xstep != xtarget);
+    assign rom_re = ((state == S_WORD_RD) && !fromram) || pf_issue;
+    assign rom_addr = {bank, pf_issue ? (curaddr + 20'd1) : curaddr};
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -420,6 +484,51 @@ module s32_sprite (
                     y <= yp;
                     yfrac <= 16'd0;
                     rowaddr <= addr0;
+                    state <= S_CLIP;
+                end
+
+                // Whole-sprite reject, trailing clamp, leading-span length.
+                // Box (inclusive): x from xpos to xtarget - xstep, y from
+                // ypos to ytarget - ystep. The visible window is the clip-in
+                // rectangle (already clamped to the drawable area).
+                S_CLIP: begin
+                    logic signed [12:0] xa, xb, ya, yb;
+                    xa = (xstep > 0) ? xpos : (xtarget + 13'sd1);
+                    xb = (xstep > 0) ? (xtarget - 13'sd1) : xpos;
+                    ya = (ystep > 0) ? ypos : (ytarget + 13'sd1);
+                    yb = (ystep > 0) ? (ytarget - 13'sd1) : ypos;
+                    if (xb < cin_l || xa > cin_r || yb < cin_t || ya > cin_b
+                        || yb < 13'sd0 || ya > 13'sd223) begin
+                        pc <= pc + (indloc ? 13'd3 : 13'd1);
+                        state <= S_PKT_RD;
+                    end else begin
+                        // MAME: clamp the far end to the clip edge
+                        if (xstep > 0 && xtarget > cin_r + 13'sd1)
+                            xtarget <= cin_r + 13'sd1;
+                        if (xstep < 0 && xtarget < cin_l - 13'sd1)
+                            xtarget <= cin_l - 13'sd1;
+                        // leading clipped destination pixels
+                        if (xstep > 0 && xpos < cin_l) begin
+                            skip_k <= 10'(cin_l - xpos);
+                            skip_x <= cin_l;
+                        end else if (xstep < 0 && xpos > cin_r) begin
+                            skip_k <= 10'(xpos - cin_r);
+                            skip_x <= cin_r;
+                        end else begin
+                            skip_k <= 10'd0;
+                            skip_x <= xpos;
+                        end
+                        state <= S_SKIPMUL;
+                    end
+                end
+
+                // k * hzoom: the DDA position after the leading span
+                S_SKIPMUL: begin
+                    logic [35:0] prod;
+                    prod = {26'd0, skip_k} * {10'd0, hzoom};
+                    skip_xacc  <= prod[15:0];
+                    skip_words <= bpp8 ? 20'(prod[35:18]) : 20'(prod[35:19]);
+                    skip_nib0  <= bpp8 ? {1'b0, prod[17:16]} : prod[18:16];
                     state <= S_ROW;
                 end
 
@@ -429,10 +538,19 @@ module s32_sprite (
                         state <= S_PKT_RD;
                     end else if (y >= cin_t && y <= cin_b &&
                                  y >= 13'sd0 && y <= 13'sd223) begin
-                        x <= xpos;
-                        xacc <= 26'd0;
-                        curaddr <= rowaddr;
+                        x <= skip_x;
+                        xacc <= {10'd0, skip_xacc};
                         word_half <= 1'b0;
+                        first_word <= 1'b1;
+                        pf_have <= 1'b0;
+                        if (transp != 8'd0 && skip_words != 20'd0) begin
+                            // end codes are live: test each skipped word
+                            curaddr <= rowaddr;
+                            scan_left <= skip_words;
+                        end else begin
+                            curaddr <= rowaddr + skip_words;
+                            scan_left <= 20'd0;
+                        end
                         state <= S_WORD_RD;
                     end else
                         state <= S_ROW_NEXT;
@@ -459,11 +577,32 @@ module s32_sprite (
                         ? {word_lo[7:0], word_lo[15:8],
                            sr_rdata[7:0], sr_rdata[15:8]}
                         : rom_rdata;
-                    nib_i <= 3'd0;
-                    state <= S_PIX;
+                    pf_have <= 1'b0;
+                    if (scan_left != 20'd0)
+                        state <= S_SCAN;
+                    else begin
+                        nib_i <= first_word ? skip_nib0 : 3'd0;
+                        first_word <= 1'b0;
+                        state <= S_PIX;
+                    end
+                end
+
+                // a source word wholly inside the leading clipped span: only
+                // its end code matters (MAME tests the word's last pixel)
+                S_SCAN: begin
+                    if (transp != 8'd0 &&
+                        (bpp8 ? (word_q[7:0] == 8'hFF) : (word_q[3:0] == 4'hF)))
+                        state <= S_ROW_NEXT;
+                    else begin
+                        scan_left <= scan_left - 20'd1;
+                        curaddr <= curaddr + 20'd1;
+                        state <= S_WORD_RD;
+                    end
                 end
 
                 S_PIX: begin
+                    logic [25:0] xn;
+                    xn = xacc + hzoom;
                     if (xacc < 26'h10000 && x != xtarget) begin
                         if (in_clipin && !in_clipout &&
                             pix != trans_here &&
@@ -486,7 +625,29 @@ module s32_sprite (
                             end
                         end
                         x <= x + xstep;
-                        xacc <= xacc + hzoom;
+                        if (pf_issue) pf_have <= 1'b1;
+                        // fused source step (header): one source pixel
+                        // crossed, not the word's last -> step now
+                        if (xn >= 26'h10000 && !last_pos) begin
+                            xacc  <= xn - 26'h10000;
+                            nib_i <= nib_i + 3'd1;
+                        end else if (xn >= 26'h10000 && last_pos && pf_have) begin
+                            // the word's last pixel, next word prefetched:
+                            // the consume step's checks, in this tick
+                            if (transp != 8'd0 &&
+                                pix == (bpp8 ? 8'hFF : 8'h0F))
+                                state <= S_ROW_NEXT;    // end code
+                            else if (x + xstep == xtarget)
+                                state <= S_ROW_NEXT;
+                            else begin
+                                xacc    <= xn - 26'h10000;
+                                word_q  <= rom_rdata;
+                                nib_i   <= 3'd0;
+                                curaddr <= curaddr + 20'd1;
+                                pf_have <= 1'b0;
+                            end
+                        end else
+                            xacc <= xn;
                     end else if (xacc >= 26'h10000) begin
                         xacc <= xacc - 26'h10000;
                         if (last_pos) begin
@@ -495,7 +656,12 @@ module s32_sprite (
                                 state <= S_ROW_NEXT;    // end code
                             else if (x == xtarget)
                                 state <= S_ROW_NEXT;
-                            else begin
+                            else if (pf_have) begin
+                                word_q  <= rom_rdata;
+                                nib_i   <= 3'd0;
+                                curaddr <= curaddr + 20'd1;
+                                pf_have <= 1'b0;
+                            end else begin
                                 curaddr <= curaddr + 20'd1;
                                 state <= S_WORD_RD;
                             end

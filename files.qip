@@ -13,6 +13,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sys.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v60bus.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v60fetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_romlc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_zromcache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_ddrload.sv
