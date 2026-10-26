@@ -71,6 +71,9 @@ module s32_board (
     // cabinet vertical mirror (S32.sv board descriptor bit 1, Holosseum) —
     // see s32_video's cab_vmirror port
     input  logic        cab_vmirror,
+    // protection V25 opcode table (S32.sv board descriptor bit 2) — see
+    // s32_v25's dec_arf
+    input  logic        prot_arf,
 
     // ---- EEPROM image
     output logic [15:0] ee_dump_data,
@@ -154,7 +157,7 @@ module s32_board (
         .fb_disp_bank(fb_disp_bank),
         .fbr_re(fbr_re), .fbr_x(fbr_x), .fbr_line(fbr_line),
         .fbr_data(fbr_data), .fb_top_line(fb_top_line),
-        .cab_vmirror(cab_vmirror),
+        .cab_vmirror(cab_vmirror), .prot_arf(prot_arf),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix),
         .audio_l(audio_l), .audio_r(audio_r),

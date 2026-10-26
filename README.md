@@ -3,12 +3,12 @@
 An FPGA recreation of Sega's **System 32** arcade board for the
 [MiSTer](https://mister-devel.github.io/MkDocs_MiSTer/) platform, built
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
-**Spider-Man: The Videogame**, **Holosseum** and **Super Visual Football**,
-which use the same board.
+**Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football** and
+**Arabian Fight**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
-system and Golden Axe's protection module, each running at its original
+system and the protection module of Golden Axe and Arabian Fight, each running at its original
 clock. The NEC V60 was written from scratch for this core; as far as we know
 it is the first FPGA implementation of that CPU.
 
@@ -26,6 +26,9 @@ it is the first FPGA implementation of that CPU.
 | `Super Visual Football - European Sega Cup.mra` | `svf` | runs in simulation; not yet tested on hardware |
 | `Super Visual Football - European Sega Cup (Original).mra` | `svfo` | not yet tested on hardware |
 | `Super Visual Soccer - Sega Cup (US).mra` | `svs` | not yet tested on hardware |
+| `Arabian Fight.mra` | `arabfgt` | tested on hardware |
+| `Arabian Fight (US).mra` | `arabfgtu` | not yet tested on hardware |
+| `Arabian Fight (Japan).mra` | `arabfgtj` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program). The US
@@ -48,8 +51,9 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `releases/_alternatives/` to `_Arcade/_alternatives/`.
 3. Put the ROM zips in `games/mame/`: `ga2.zip` (plus `ga2u.zip` or
    `ga2j.zip` for the regional sets), `spidman.zip` (plus `spidmanu.zip` or
-   `spidmanj.zip`), `holo.zip`, and `svf.zip` (plus `svfo.zip` or
-   `svs.zip`). Split and merged sets both work.
+   `spidmanj.zip`), `holo.zip`, `svf.zip` (plus `svfo.zip` or
+   `svs.zip`), and `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`).
+   Split and merged sets both work.
 
 Loading a game takes about two seconds.
 
@@ -60,20 +64,20 @@ report.
 
 ## Controls
 
-Golden Axe and Spider-Man take up to four players, Holosseum and Super
-Visual Football two. Each player
+Golden Axe, Spider-Man and Arabian Fight take up to four players, Holosseum
+and Super Visual Football two. Each player
 uses the D-pad or stick plus these buttons. The MRAs map them to a pad by
 default, and MiSTer's input mapping can change that:
 
-| Button | Default pad button | Golden Axe | Spider-Man | Holosseum | Super Visual Football |
-| --- | --- | --- | --- | --- | --- |
-| 1 | A | Attack | Attack | Punch | Shoot |
-| 2 | B | Jump | Jump | Kick | Pass A |
-| 3 | X | Magic | | | Pass B |
-| Start | Start | Start | Start | Start | Start |
-| Coin | R | Coin | Coin | Coin | Coin |
-| Service | L | adds a service credit; moves the cursor in the service menu | same | same | same |
-| Test | Select | opens the service menu; selects the highlighted item in it | same | same | same |
+| Button | Default pad button | Golden Axe | Spider-Man | Holosseum | Super Visual Football | Arabian Fight |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | A | Attack | Attack | Punch | Shoot | Attack |
+| 2 | B | Jump | Jump | Kick | Pass A | Jump |
+| 3 | X | Magic | | | Pass B | |
+| Start | Start | Start | Start | Start | Start | Start |
+| Coin | R | Coin | Coin | Coin | Coin | Coin |
+| Service | L | adds a service credit; moves the cursor in the service menu | same | same | same | same |
+| Test | Select | opens the service menu; selects the highlighted item in it | same | same | same | same |
 
 In Super Visual Football, Pass A and Pass B pass to the teammates marked A
 and B on the pitch. The longer you hold a button, the harder the ball is
@@ -174,9 +178,15 @@ Things you may notice, or may want to know:
 - **Holosseum** is viewed through a mirror in its cabinet, so the core shows
   the lines in reverse order. Still frames are exact; a change in the middle
   of a frame tears at a different screen line than on a real cabinet.
+- **Arabian Fight's protection CPU** (a V25) passes data to the main CPU
+  every frame through a dual-port RAM. The core runs it at the clock and
+  wait states its program selects, from NEC's V25 manual; MAME models
+  neither, so it is not a reference here. How the RAM's collision (`/BUSY`)
+  and interrupt (`/INT`) pins are wired on the protection board is not
+  known; like MAME, the core does not connect them.
 - **Not implemented**: the 416-pixel video mode (none of the supported games
-  uses it), and the parts of the V25 that Golden Axe's protection program does
-  not use (it only runs at boot).
+  uses it), and the parts of the V25 that the Golden Axe and Arabian Fight
+  protection programs do not use.
 
 No real System 32 board was available to this project, so none of the
 behaviour above has been measured against one. Measurements from real boards
@@ -242,6 +252,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
+*Super Visual Soccer*, *Arabian Fight* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

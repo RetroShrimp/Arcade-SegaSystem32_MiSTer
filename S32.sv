@@ -375,10 +375,14 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //   bit 1  vertical mirror: 1 = Holosseum's cabinet, which shows the monitor
 //          through a mirror (MAME ORIENTATION_FLIP_Y). The board's output is
 //          not flipped; s32_video presents the lines in reverse order.
-//   bits 2-7  reserved, must be 0
+//   bit 2  protection V25 opcode table: 0 = Golden Axe's, 1 = Arabian
+//          Fight's. The table is masked into the V25 part on the protection
+//          module, so it is board build, not wiring, but it is just as fixed
+//          per game (MAME sega_system32_ga2 vs sega_system32_arf).
+//   bits 3-7  reserved, must be 0
 //
-// This is cabinet wiring, not an operator setting, so it lives in the .mra
-// rather than the OSD.
+// These describe how the game's board and cabinet are built, not operator
+// settings, so they live in the .mra rather than the OSD.
 reg [7:0] board_cfg = 8'h00;
 always @(posedge clk_sys)
 	if (ioctl_wr && ioctl_download && ioctl_index == 1 && ioctl_addr == 0)
@@ -479,6 +483,7 @@ s32_board board
 	.in_extra1(in_extra1), .in_extra2(in_extra2),
 	.in_extra3(in_extra3),
 	.cab_vmirror(board_cfg[1]),
+	.prot_arf(board_cfg[2]),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),

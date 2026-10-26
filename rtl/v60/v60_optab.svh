@@ -669,7 +669,7 @@ function automatic logic [7:0] v60_exectab (input logic [7:0] op);
         8'h46: v60_exectab = 8'hFF;
         8'h47: v60_exectab = 8'h2A;
         8'h48: v60_exectab = 8'h18;
-        8'h49: v60_exectab = 8'hFF;
+        8'h49: v60_exectab = 8'h3F;
         8'h4A: v60_exectab = 8'h2B;
         8'h4B: v60_exectab = 8'hFF;
         8'h4C: v60_exectab = 8'hFF;

@@ -75,6 +75,9 @@ module s32_sys (
     // ---- cabinet vertical mirror (from the .mra, not a board signal; see
     // s32_video). 1 only for Holosseum.
     input  logic        cab_vmirror,
+    // ---- protection V25 opcode table (from the .mra's board descriptor
+    // bit 2): 0 = ga2's, 1 = Arabian Fight's. See s32_v25's dec_arf.
+    input  logic        prot_arf,
 
     // ---- video out
     output logic        de,
@@ -430,6 +433,7 @@ module s32_sys (
 
     s32_v25 u_v25 (
         .clk(clk), .rst(rst), .cen(v25_cen), .hold(mrom_hold),
+        .dec_arf(prot_arf),
         .rom_addr(mrom_addr), .rom_data(mrom_data), .rom_rd(mrom_rd),
         .dp_sel(mcu_dp_sel), .dp_we(mcu_dp_we), .dp_addr(mcu_dp_addr),
         .dp_wdata(mcu_dp_wdata), .dp_rdata(mcu_dp_rdata)

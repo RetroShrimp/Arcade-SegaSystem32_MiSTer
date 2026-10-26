@@ -1,15 +1,56 @@
-// s32_v25.sv — NEC V25 subset core for Golden Axe's 315-5533-02
-// protection module. Executes the original mcu.bin: the ROM address-line
-// scramble is undone combinationally on the fetch address and the
-// per-instruction opcode encryption through a 256-entry LUT, exactly
-// as the real module does (MAME decrypt_protrom + ga2_opcode_table).
-// The implemented subset is exactly the 28 opcodes the decryption table
-// defines: an encrypted byte outside the table cannot be executed by this
-// module at all.
+// s32_v25.sv — NEC V25 subset core for the System 32 V25 protection
+// modules: Golden Axe's 315-5533-02 and Arabian Fight's (MAME builds both
+// as SEGA_S32_V25_DEVICE; only the V25's opcode table differs). Executes
+// the original mcu ROM: the ROM address-line scramble is undone
+// combinationally on the fetch address and the per-instruction opcode
+// encryption through a 256-entry LUT, exactly as the real module does
+// (MAME decrypt_protrom + ga2_opcode_table / arf_opcode_table, selected
+// by dec_arf). The implemented subset is the union of what the two tables
+// define (28 + 32 entries, 32 distinct opcodes counting the 26 prefix;
+// arf adds 03, 73, 74 and BA): an encrypted byte outside the selected
+// table cannot be executed by this module at all.
 //
-// Bus model: one byte access per two clocks (issue/latch), no cycle
-// accuracy (the program runs once at boot and halts; the V60 only
-// ever sees the finished dpram). Memory decode:
+// Timing (2026-10-25, for Arabian Fight, whose program serves the V60
+// every frame, so its speed decides which V60 reads see a stale record;
+// docs/arabfgt-scoping.md §5.2 and §10, OPEN-QUESTIONS Q44). Two NEC
+// manuals: the V25/V35 hardware manual (U13030EJ) and the instruction
+// manual (U12120EJ3V0UM00; local copies in docs_ref/).
+//   * Clocks. cen is fX, the oscillator (10 MHz, MAME's V25 device
+//     clock). The system clock fCLK = fX/2, /4 or /8 by PRC.PCK (hardware
+//     ch.8.2); PRC resets to 4EH (/8) and is shadowed from the program's
+//     own SFR write (FFFEB). Every count below is in fCLK ticks.
+//   * Bus unit (BIU). One external bus cycle at a time: T1, TW x n, T2
+//     (hardware ch.5, Fig.5-3), n from the 2-bit WTC field of the 128KB
+//     block (blocks 6/7 share one): 00/01/10/11 = 0/1/2/2 waits (11 =
+//     READY control; with PMC1 bit 7 clear READY reads as "always two
+//     waits"). WTC resets to FFFFH and is shadowed from FFFE8/9. Internal
+//     RAM is never waited (hardware A.3.2). Words are two byte cycles (an
+//     8-bit bus). Read data is taken at T2.
+//   * Prefetch queue (instruction manual C.2). 6 bytes; the BIU prefetches
+//     whenever a byte is free and the bus is idle. An execution-unit data
+//     access goes first, except that while the queue holds 2 bytes or
+//     fewer a prefetch is forced ahead of it until 3 or more are queued.
+//     A branch, call or return to a non-contiguous address clears the
+//     queue and fetching restarts at the target; a prefetch already on
+//     the bus completes and is discarded.
+//   * Execution unit (EXU). Decoding takes bytes from the queue and waits
+//     only when the queue is empty: the manual's clock table "does not
+//     include prefetch time, predecode time" (2.2 (1)(a)), so decode adds
+//     no clocks of its own. Execution then lasts the instruction's
+//     Table 2-8 count (V25 columns, internal-RAM-enabled or -disabled by
+//     PRC.RAMEN), during which its own data cycles run through the BIU; it
+//     ends when that count has elapsed AND its data cycles are done
+//     (Appendix C: an EXU stage waits for a slower bus stage). The queue
+//     is cleared at the END of a taken transfer's count, because the
+//     count excludes prefetch time (a pessimistic reading: the real
+//     part may restart fetching earlier inside it).
+//   * NOT modelled, because the manuals do not give it: the exact clock
+//     inside the count at which each data cycle starts (all are issued as
+//     soon as the decode completes, in program order), and pipeline-stage
+//     granularity beyond "count vs bus" (NEC: desk calculation is
+//     "extremely difficult"; measure with an in-circuit emulator).
+//     ga2's program runs once at boot, so it never depended on any of this.
+// Memory decode:
 //   linear 0xxxx / F0000-FFDFF  ROM (swizzled, via the rom port)
 //   1xxxx                       dpram left port (offset & 0x7FF)
 //   FFE00-FFFFF                 512B internal RAM (SFR writes land
@@ -18,12 +59,13 @@
 module s32_v25 (
     input  logic        clk,
     input  logic        rst,
-    input  logic        cen,          // the FSM steps only on cen (10 MHz
-                                      // from s32_sys, the real V25's
-                                      // clock; each state is about one bus
-                                      // byte, so this is an upper bound on
-                                      // its speed)
+    input  logic        cen,          // fX, the oscillator (10 MHz from
+                                      // s32_sys); time runs on fCLK =
+                                      // fX / PCK ticks (see the header)
     input  logic        hold,         // freeze (ROM line refill in flight)
+    input  logic        dec_arf,      // opcode table: 0 = ga2, 1 = Arabian
+                                      // Fight (static per game: the .mra's
+                                      // board descriptor bit 2)
 
     // original-dump ROM (64KB; combinational or 1-cycle registered)
     output logic [15:0] rom_addr,
@@ -39,10 +81,32 @@ module s32_v25 (
 );
 
     // ---------------------------------------------- opcode decryption
-    // ga2_opcode_table (segas32_m.cpp); FF = never appears at an
-    // instruction boundary
-    function automatic logic [7:0] decrypt (input logic [7:0] e);
-        case (e)
+    // ga2_opcode_table / arf_opcode_table (segas32_m.cpp); FF = an entry
+    // the table leaves undefined (MAME decrypts those to 00, but neither
+    // program executes one: tools/v25_trace_census.py). Both case lists
+    // are checked against MAME's source by sim/s32_v25/check_tables.py.
+    function automatic logic [7:0] decrypt (input logic [7:0] e,
+                                            input logic arf);
+        if (arf) case (e)
+            8'h02: decrypt = 8'h43;  8'h06: decrypt = 8'h83;
+            8'h0A: decrypt = 8'hEA;  8'h0D: decrypt = 8'hBC;
+            8'h0E: decrypt = 8'h73;  8'h20: decrypt = 8'h3A;
+            8'h23: decrypt = 8'hBE;  8'h2E: decrypt = 8'h80;
+            8'h31: decrypt = 8'hB5;  8'h37: decrypt = 8'h26;
+            8'h4B: decrypt = 8'hE8;  8'h4C: decrypt = 8'h8D;
+            8'h4E: decrypt = 8'h8B;  8'h53: decrypt = 8'hFA;
+            8'h55: decrypt = 8'h8A;  8'h77: decrypt = 8'hBA;
+            8'h78: decrypt = 8'h88;  8'h97: decrypt = 8'hBB;
+            8'hAD: decrypt = 8'h75;  8'hAF: decrypt = 8'hBF;
+            8'hB8: decrypt = 8'h03;  8'hB9: decrypt = 8'h3B;
+            8'hBA: decrypt = 8'h8E;  8'hBB: decrypt = 8'h74;
+            8'hBE: decrypt = 8'h81;  8'hC3: decrypt = 8'hC3;
+            8'hD7: decrypt = 8'hB9;  8'hD8: decrypt = 8'hB2;
+            8'hDD: decrypt = 8'h49;  8'hE8: decrypt = 8'hEB;
+            8'hFE: decrypt = 8'h02;  8'hFF: decrypt = 8'hB8;
+            default: decrypt = 8'hFF;
+        endcase
+        else case (e)
             8'h02: decrypt = 8'hEA;  8'h05: decrypt = 8'h8B;
             8'h1F: decrypt = 8'hFA;  8'h2A: decrypt = 8'h3B;
             8'h2C: decrypt = 8'h49;  8'h35: decrypt = 8'hE8;
@@ -71,7 +135,7 @@ module s32_v25 (
     // ------------------------------------------------- architectural
     logic [15:0] reg16 [0:7];    // AW CW DW BW SP BP IX(SI) IY(DI)
     logic [15:0] sreg  [0:3];    // ES CS SS DS (8086 sreg encoding)
-    logic [15:0] ip;
+    logic [15:0] ip;             // EXU: IP of the next byte decoded
     logic        fl_z, fl_s, fl_c;
 
     localparam AX = 3'd0, CX = 3'd1, DX = 3'd2, BX = 3'd3,
@@ -81,12 +145,11 @@ module s32_v25 (
 
     logic [7:0] iram [0:511];    // internal RAM/SFR page FFE00-FFFFF
 
-    // ------------------------------------------------------ bus mux
-    // one shared byte port: issue in one state, latch the next
+    // ------------------------------------------------------ bus port
+    // one shared byte port, owned by the BIU
     logic [19:0] bus_addr;
     logic        bus_we;
     logic [7:0]  bus_wdata;
-    logic [7:0]  bus_q;          // latched read data
 
     assign rom_addr = swizzle(bus_addr[15:0]);
     assign dp_sel   = (bus_addr[19:16] == 4'h1);
@@ -106,6 +169,8 @@ module s32_v25 (
     logic [7:0] iram_q;
     logic       dp_we_r;
     assign dp_we = dp_we_r;
+
+    wire  [7:0] bus_rd = in_rom ? rom_data : dp_sel ? dp_rdata : iram_q;
 
     // ------------------------------------------------- decode state
     logic        es_ovr;
@@ -183,64 +248,196 @@ module s32_v25 (
     endtask
 
     // --------------------------------------------------------- FSM
+    // S_OP..S_I4 take one byte each from the prefetch queue (decode);
+    // S_RD/S_WR/S_PUSH/S_POP hand one data request (a byte, or a word as
+    // two back-to-back byte cycles) to the BIU and wait for it; S_FIN
+    // waits out the instruction's Table 2-8 count.
     typedef enum logic [4:0] {
-        S_OP, S_OP_L, S_MOD, S_MOD_L, S_D1, S_D1_L, S_D2, S_D2_L,
-        S_I1, S_I1_L, S_I2, S_I2_L, S_I3, S_I3_L, S_I4, S_I4_L,
-        S_RD0, S_RD0_L, S_RD1, S_RD1_L, S_EXEC,
-        S_WR0, S_WR1, S_PUSH0, S_PUSH1, S_POP0, S_POP0_L,
-        S_POP1, S_POP1_L, S_HALT
+        S_OP, S_MOD, S_D1, S_D2, S_I1, S_I2, S_I3, S_I4,
+        S_RD, S_RD_W, S_EXEC, S_WR, S_WR_W,
+        S_PUSH, S_PUSH_W, S_POP, S_POP_W,
+        S_FIN, S_HALT
     } state_e;
     state_e st;
+
+    function automatic logic is_pop (input state_e s);
+        is_pop = (s == S_OP) || (s == S_MOD) || (s == S_D1) ||
+                 (s == S_D2) || (s == S_I1)  || (s == S_I2) ||
+                 (s == S_I3) || (s == S_I4);
+    endfunction
 
     // instruction classification (on the DECRYPTED opcode)
     function automatic logic has_modrm (input logic [7:0] o);
         has_modrm = (o == 8'h8B) || (o == 8'h8A) || (o == 8'h88) ||
                     (o == 8'h8D) || (o == 8'h8E) || (o == 8'h3B) ||
-                    (o == 8'h3A) || (o == 8'h02) || (o == 8'h80) ||
-                    (o == 8'h81) || (o == 8'h83);
+                    (o == 8'h3A) || (o == 8'h02) || (o == 8'h03) ||
+                    (o == 8'h80) || (o == 8'h81) || (o == 8'h83);
     endfunction
 
     function automatic logic op_wide (input logic [7:0] o);
         op_wide = (o == 8'h8B) || (o == 8'h8D) || (o == 8'h8E) ||
-                  (o == 8'h3B) || (o == 8'h81) || (o == 8'h83);
+                  (o == 8'h3B) || (o == 8'h03) || (o == 8'h81) ||
+                  (o == 8'h83);
     endfunction
 
     // memory operand needed (loads; 88 is a pure store, 8D pure EA)
     function automatic logic op_loads (input logic [7:0] o);
         op_loads = (o == 8'h8B) || (o == 8'h8A) || (o == 8'h8E) ||
                    (o == 8'h3B) || (o == 8'h3A) || (o == 8'h02) ||
-                   (o == 8'h80) || (o == 8'h81) || (o == 8'h83);
+                   (o == 8'h03) || (o == 8'h80) || (o == 8'h81) ||
+                   (o == 8'h83);
     endfunction
 
-    logic [15:0] nip;            // IP after current fetch byte
     logic [19:0] lin_ea;
     assign lin_ea = ({4'd0, sreg[ea_seg]} << 4) + {4'd0, ea_off};
+    wire  [19:0] lin_sp = ({4'd0, sreg[SEG_SS]} << 4) + {4'd0, reg16[SP]};
 
     logic [17:0] gr;
     logic [15:0] pushv;
 
-    // registered memories deliver data one cycle after the address:
-    // every latch state waits one extra cycle before sampling
-    logic waitq;
-    function automatic logic is_latch (input state_e s);
-        is_latch = (s == S_OP_L) || (s == S_MOD_L) || (s == S_D1_L) ||
-                   (s == S_D2_L) || (s == S_I1_L) || (s == S_I2_L) ||
-                   (s == S_I3_L) || (s == S_I4_L) || (s == S_RD0_L) ||
-                   (s == S_RD1_L) || (s == S_POP0_L) ||
-                   (s == S_POP1_L);
+    // ------------------------------------- clock divider and bus waits
+    logic [7:0]  prc;            // PRC shadow (FFFEB): [1:0] = PCK,
+                                 // [6] = RAMEN
+    logic [15:0] wtc;            // WTC shadow (FFFE9:FFFE8)
+    logic [2:0]  cdiv;           // fX ticks within one fCLK
+    wire  [2:0]  cdiv_last = (prc[1:0] == 2'b00) ? 3'd1     // fX/2
+                           : (prc[1:0] == 2'b01) ? 3'd3     // fX/4
+                           :                       3'd7;    // fX/8
+    wire         ct = cen && !hold && (cdiv == cdiv_last);  // one fCLK
+
+    // waits of an address (WTC block field; internal RAM 0)
+    function automatic logic [1:0] waits (input logic [19:0] a,
+                                          input logic internal);
+        logic [1:0] f;
+        if (internal) waits = 2'd0;
+        else begin
+            unique case (a[19:17])
+                3'd0: f = wtc[1:0];   3'd1: f = wtc[3:2];
+                3'd2: f = wtc[5:4];   3'd3: f = wtc[7:6];
+                3'd4: f = wtc[9:8];   3'd5: f = wtc[11:10];
+                default: f = wtc[13:12];                  // blocks 6 and 7
+            endcase
+            waits = (f == 2'b11) ? 2'd2 : f;
+        end
     endfunction
 
+    // data-cycle waits: the internal RAM page is never waited
+    function automatic logic [1:0] dwaits (input logic [19:0] a);
+        dwaits = waits(a, a >= 20'hFFE00);
+    endfunction
+
+    // Table 2-8 execution clocks (instruction manual pp.202-211, V25
+    // columns), for the opcodes this module runs. ea = 3 for mod 00/01
+    // (incl. direct), 4 for mod 10 (note (g)); t = the operand's waits.
+    function automatic logic [5:0] exu_clocks
+        (input logic [7:0] o, input logic [1:0] mod, input logic [2:0] rg,
+         input logic [1:0] t, input logic taken, input logic ramen);
+        logic [5:0] ea, t1, t2, t4;
+        logic       mem;
+        ea  = (mod == 2'b10) ? 6'd4 : 6'd3;
+        t1  = {4'd0, t};
+        t2  = {3'd0, t, 1'b0};
+        t4  = {2'd0, t, 2'b0};
+        mem = (mod != 2'b11);
+        if (o[7:3] == 5'b10110)      exu_clocks = 6'd5;     // MOV r8,imm
+        else if (o[7:3] == 5'b10111) exu_clocks = 6'd6;     // MOV r16,imm
+        else case (o)
+            8'h43, 8'h49: exu_clocks = 6'd2;                // INC/DEC r16
+            8'hFA:        exu_clocks = 6'd4;                // DI
+            8'hEB:        exu_clocks = 6'd12;               // BR short
+            8'hEA:        exu_clocks = 6'd15;               // BR far
+            8'h73, 8'h74, 8'h75:                            // Bcc short
+                          exu_clocks = taken ? 6'd15 : 6'd8;
+            8'hE8:        exu_clocks = ramen ? 6'd22 + t2   // CALL near
+                                             : 6'd18 + t2;
+            8'hC3:        exu_clocks = 6'd20 + t2;          // RET
+            8'h8D:        exu_clocks = ea + 6'd2;           // LDEA
+            8'h8E:        exu_clocks = mem ? ea + 6'd10 + t2 : 6'd4;
+            8'h8B, 8'h3B, 8'h03:                            // word r,rm
+                          exu_clocks = mem ? ea + 6'd8 + t2 : 6'd2;
+            8'h8A, 8'h3A, 8'h02:                            // byte r,rm
+                          exu_clocks = mem ? ea + 6'd6 + t1 : 6'd2;
+            8'h88:        exu_clocks = !mem ? 6'd2          // MOV rm8,r8
+                                     : ramen ? ea + 6'd4 + t1 : ea + 6'd2;
+            8'h80:        exu_clocks = !mem ? 6'd5          // grp rm8,imm
+                                     : (rg == 3'd7) ? ea + 6'd7 + t1
+                                     : ramen ? ea + 6'd9 + t2
+                                             : ea + 6'd7 + t2;
+            8'h81, 8'h83: exu_clocks = !mem ? 6'd6          // grp rm16,imm
+                                     : (rg == 3'd7) ? ea + 6'd10 + t2
+                                     : ramen ? ea + 6'd14 + t4
+                                             : ea + 6'd10 + t4;
+            default:      exu_clocks = 6'd2;
+        endcase
+    endfunction
+
+    // ------------------------------------------------ prefetch queue
+    logic [7:0]  q [0:7];        // 6 used; 3-bit pointers wrap at 8
+    logic [2:0]  q_rd, q_wr;
+    logic [2:0]  q_cnt;          // 0..6
+    logic [15:0] f_ip;           // BIU: IP of the next byte to prefetch
+    wire  [7:0]  q_head = q[q_rd];
+
+    // BIU cycle in flight
+    localparam logic [1:0] B_FETCH = 2'd0, B_READ = 2'd1, B_WRITE = 2'd2;
+    logic        b_busy;
+    logic [1:0]  b_kind;
+    logic [1:0]  b_left;         // TW ticks still to run before T2
+    logic        b_drop;         // fetch result discarded (queue cleared)
+    wire         b_t2 = ct && b_busy && (b_left == 2'd0);
+
+    // EXU data request (one at a time). A word is one request: the BIU
+    // runs its two byte cycles (low byte first, ascending address) back to
+    // back, as one bus-unit operation, with no prefetch between them.
+    logic        x_req, x_we, x_word;
+    logic [19:0] x_addr;
+    logic [15:0] x_wdata, x_q;
+    logic        x_done;         // the request's last T2 has passed
+    logic        b_hi;           // the cycle in flight is a word's high byte
+    logic        b_more;         // a word's high byte is due next
+
+    // read completion tick, for benches (the dpram read is taken here)
+    wire         rd_done = b_t2 && (b_kind == B_READ);
+
+    // execution count
+    logic [5:0]  e_el, e_need;
+    logic        e_flush;        // clear the queue at S_FIN
+    logic        halted;
+
+    // the instruction ends this clk and clears the queue: no prefetch may
+    // start on it (it would fetch at the old address into the new queue)
+    wire         fin_flush = (st == S_FIN) && (e_el >= e_need) && e_flush;
+
     always_ff @(posedge clk) begin
-        // default bus: instruction fetch address
+        if (rst)
+            cdiv <= 3'd0;
+        else if (cen && !hold)
+            cdiv <= (cdiv == cdiv_last) ? 3'd0 : cdiv + 3'd1;
+    end
+
+    always_ff @(posedge clk) begin
+        logic       push, pop, flush;
+        logic [7:0] pb;
+        push = 1'b0; pop = 1'b0; flush = 1'b0; pb = 8'h00;
+
+        // default bus: strobes last one clk
         bus_we   <= 1'b0;
         dp_we_r  <= 1'b0;
         iram_q   <= iram[bus_addr[8:0]];
-        if (in_iram && bus_we)
+        if (in_iram && bus_we) begin
             iram[bus_addr[8:0]] <= bus_wdata;
+            unique case (bus_addr[8:0])                   // SFR shadows
+                9'h1E8: wtc[7:0]  <= bus_wdata;
+                9'h1E9: wtc[15:8] <= bus_wdata;
+                9'h1EB: prc       <= bus_wdata;
+                default: ;
+            endcase
+        end
 
         if (rst) begin
             st <= S_OP;
             ip <= 16'hFFF0;                 // V25 reset: CS:IP = F000:FFF0
+            f_ip <= 16'hFFF0;
             sreg[SEG_CS] <= 16'hF000;       // reset fetch at FFFF0
             sreg[SEG_ES] <= 16'd0;
             sreg[SEG_SS] <= 16'd0;
@@ -249,60 +446,118 @@ module s32_v25 (
             fl_z <= 1'b0; fl_s <= 1'b0; fl_c <= 1'b0;
             bus_addr <= 20'hFFFF0;
             is_fetch <= 1'b1;
-            waitq <= 1'b0;
-        end else if (hold) begin
-            // ROM line refill in flight: FSM frozen (bus_addr, st,
-            // waitq all keep state; the idempotent iram/dpram strobe
-            // repeats above are harmless)
-        end else if (!cen) begin
-            // between cen ticks: frozen, as for hold. Read data is
-            // stable long before the next tick, so the one-cycle
-            // is_latch wait is correct at any cen rate.
-        end else if (is_latch(st) && !waitq) begin
-            waitq <= 1'b1;       // memory data lands this cycle
-        end else begin
-            waitq <= 1'b0;
-            unique case (st)
-                // ------------------------------------ opcode fetch
-                S_OP: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
+            prc <= 8'h4E;                   // reset values (hardware
+            wtc <= 16'hFFFF;                // manual ch.8.2, ch.5.1)
+            q_rd <= 3'd0; q_wr <= 3'd0; q_cnt <= 3'd0;
+            b_busy <= 1'b0; b_kind <= B_FETCH; b_left <= 2'd0;
+            b_drop <= 1'b0;
+            x_req <= 1'b0; x_we <= 1'b0; x_word <= 1'b0; x_done <= 1'b0;
+            b_hi <= 1'b0; b_more <= 1'b0;
+            e_el <= 6'd0; e_need <= 6'd0; e_flush <= 1'b0;
+            halted <= 1'b0;
+        end else if (!hold) begin
+            // =============================================== BIU
+            // T2 of the cycle in flight
+            if (b_t2) begin
+                b_busy <= 1'b0;
+                unique case (b_kind)
+                    B_FETCH: if (!b_drop) begin push = 1'b1; pb = bus_rd; end
+                    B_READ: begin
+                        if (b_hi) x_q[15:8] <= bus_rd;
+                        else      x_q[7:0]  <= bus_rd;
+                        if (x_word && !b_hi) b_more <= 1'b1;
+                        else                 x_done <= 1'b1;
+                    end
+                    default:                               // write
+                        if (x_word && !b_hi) b_more <= 1'b1;
+                        else                 x_done <= 1'b1;
+                endcase
+            end else if (ct && b_busy)
+                b_left <= b_left - 2'd1;                    // TW
+            // T1 of the next cycle (the tick after a T2 at the earliest)
+            else if (ct && !b_busy) begin
+                logic fetch_ok, do_data, do_fetch;
+                fetch_ok = (q_cnt < 3'd6) && !halted;
+                do_data  = x_req && !(fetch_ok && q_cnt <= 3'd2);
+                do_fetch = fetch_ok && !do_data && !fin_flush && !b_more;
+                if (b_more) begin                   // a word's high byte
+                    bus_addr <= x_addr + 20'd1;
+                    b_left   <= dwaits(x_addr + 20'd1);
+                    b_busy   <= 1'b1;
+                    b_hi     <= 1'b1;
+                    b_more   <= 1'b0;
+                    if (x_we) begin
+                        bus_wdata <= x_wdata[15:8];
+                        bus_we    <= 1'b1;
+                        dp_we_r   <= ((x_addr + 20'd1) >> 16 == 20'h1);
+                    end
+                end else if (do_data) begin
+                    bus_addr <= x_addr;
+                    is_fetch <= 1'b0;
+                    b_kind   <= x_we ? B_WRITE : B_READ;
+                    b_left   <= dwaits(x_addr);
+                    b_busy   <= 1'b1;
+                    b_hi     <= 1'b0;
+                    x_req    <= 1'b0;
+                    if (x_we) begin
+                        bus_wdata <= x_wdata[7:0];
+                        bus_we    <= 1'b1;
+                        dp_we_r   <= (x_addr[19:16] == 4'h1);
+                    end
+                end else if (do_fetch) begin
+                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4) + {4'd0, f_ip};
                     is_fetch <= 1'b1;
-                    st <= S_OP_L;
+                    b_kind   <= B_FETCH;
+                    b_left   <= waits(({4'd0, sreg[SEG_CS]} << 4)
+                                      + {4'd0, f_ip}, 1'b0);
+                    b_busy   <= 1'b1;
+                    b_drop   <= 1'b0;
+                    f_ip     <= f_ip + 16'd1;
                 end
-                S_OP_L: begin
+            end
+
+            // =============================================== EXU
+            // the count runs from the end of decode, one per fCLK
+            if (is_pop(st))
+                e_el <= 6'd0;
+            else if (ct && e_el != 6'h3F)
+                e_el <= e_el + 6'd1;
+
+            unique case (st)
+                // ------------------------------------ opcode
+                S_OP: if (q_cnt != 3'd0) begin
                     logic [7:0] o;
-                    o = decrypt(in_rom ? rom_data :
-                                dp_sel ? dp_rdata : iram_q);
+                    pop = 1'b1;
+                    o = decrypt(q_head, dec_arf);
                     ip <= ip + 16'd1;
                     if (o == 8'h26) begin
-                        es_ovr <= 1'b1;
-                        st <= S_OP;
+                        es_ovr <= 1'b1;            // DS1: prefix, 2 clocks
+                        e_need <= 6'd2; e_flush <= 1'b0;
+                        st <= S_FIN;
                     end else if (o == 8'hFF) begin
+                        halted <= 1'b1;
                         st <= S_HALT;
                     end else begin
                         opc <= o;
                         disp <= 16'd0;
+                        mrm <= 8'hC0;              // register form unless
+                                                   // a modrm follows
                         if (has_modrm(o))              st <= S_MOD;
                         else if (o[7:3] == 5'b10111)   st <= S_I1; // mov r16,imm
                         else if (o[7:3] == 5'b10110)   st <= S_I1; // mov r8,imm
                         else if (o == 8'hE8)           st <= S_I1;
-                        else if (o == 8'hEB || o == 8'h75) st <= S_I1;
+                        else if (o == 8'hEB || o == 8'h75 ||
+                                 o == 8'h74 || o == 8'h73) st <= S_I1;
                         else if (o == 8'hEA)           st <= S_I1;
                         else                           st <= S_EXEC;
                     end
                 end
 
                 // ------------------------------------------ modrm
-                S_MOD: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_MOD_L;
-                end
-                S_MOD_L: begin
+                S_MOD: if (q_cnt != 3'd0) begin
                     logic [7:0] m;
-                    m = in_rom ? rom_data : dp_sel ? dp_rdata : iram_q;
+                    pop = 1'b1;
+                    m = q_head;
                     mrm <= m;
                     ip <= ip + 16'd1;
                     if (m[7:6] == 2'b00 && m[2:0] == 3'd6)
@@ -319,15 +574,10 @@ module s32_v25 (
                         st <= after_ea(m[7:6]);
                     end
                 end
-                S_D1: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_D1_L;
-                end
-                S_D1_L: begin
+                S_D1: if (q_cnt != 3'd0) begin
                     logic [7:0] d;
-                    d = in_rom ? rom_data : dp_sel ? dp_rdata : iram_q;
+                    pop = 1'b1;
+                    d = q_head;
                     ip <= ip + 16'd1;
                     if (mrm_mod == 2'b01) begin        // disp8 sext
                         disp <= {{8{d[7]}}, d};
@@ -340,16 +590,10 @@ module s32_v25 (
                         st <= S_D2;
                     end
                 end
-                S_D2: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_D2_L;
-                end
-                S_D2_L: begin
+                S_D2: if (q_cnt != 3'd0) begin
                     logic [15:0] d16;
-                    d16 = {(in_rom ? rom_data :
-                            dp_sel ? dp_rdata : iram_q), disp[7:0]};
+                    pop = 1'b1;
+                    d16 = {q_head, disp[7:0]};
                     disp <= d16;
                     ip <= ip + 16'd1;
                     if (mrm_mod == 2'b00)              // [disp16]
@@ -362,92 +606,59 @@ module s32_v25 (
                 end
 
                 // ------------------------------------- immediates
-                S_I1: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_I1_L;
-                end
-                S_I1_L: begin
-                    imm[7:0] <= in_rom ? rom_data
-                                       : dp_sel ? dp_rdata : iram_q;
+                S_I1: if (q_cnt != 3'd0) begin
+                    pop = 1'b1;
+                    imm[7:0] <= q_head;
                     ip <= ip + 16'd1;
                     if (imm_len2())
                         st <= S_I2;
                     else if ((opc == 8'h80 || opc == 8'h83) &&
                              mrm_mod != 2'b11)
-                        st <= S_RD0;   // group RMW: fetch old value
+                        st <= S_RD;    // group RMW: fetch old value
                     else
                         st <= S_EXEC;
                 end
-                S_I2: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_I2_L;
-                end
-                S_I2_L: begin
-                    imm[15:8] <= in_rom ? rom_data
-                                        : dp_sel ? dp_rdata : iram_q;
+                S_I2: if (q_cnt != 3'd0) begin
+                    pop = 1'b1;
+                    imm[15:8] <= q_head;
                     ip <= ip + 16'd1;
                     if (opc == 8'hEA)
                         st <= S_I3;                    // segment word
                     else if (opc == 8'h81 && mrm_mod != 2'b11)
-                        st <= S_RD0;   // group RMW: fetch old value
+                        st <= S_RD;    // group RMW: fetch old value
                     else
                         st <= S_EXEC;
                 end
-                S_I3: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_I3_L;
-                end
-                S_I3_L: begin
-                    disp[7:0] <= in_rom ? rom_data
-                                        : dp_sel ? dp_rdata : iram_q;
+                S_I3: if (q_cnt != 3'd0) begin
+                    pop = 1'b1;
+                    disp[7:0] <= q_head;
                     ip <= ip + 16'd1;
                     st <= S_I4;
                 end
-                S_I4: begin
-                    bus_addr <= ({4'd0, sreg[SEG_CS]} << 4)
-                              + {4'd0, ip};
-                    is_fetch <= 1'b1;
-                    st <= S_I4_L;
-                end
-                S_I4_L: begin
-                    disp[15:8] <= in_rom ? rom_data
-                                         : dp_sel ? dp_rdata : iram_q;
+                S_I4: if (q_cnt != 3'd0) begin
+                    pop = 1'b1;
+                    disp[15:8] <= q_head;
                     ip <= ip + 16'd1;
                     st <= S_EXEC;
                 end
 
                 // ------------------------------- memory operand read
-                S_RD0: begin
-                    bus_addr <= lin_ea;
-                    is_fetch <= 1'b0;
-                    st <= S_RD0_L;
+                S_RD: begin
+                    x_req <= 1'b1; x_we <= 1'b0; x_addr <= lin_ea;
+                    x_word <= op_wide(opc); x_done <= 1'b0;
+                    st <= S_RD_W;
                 end
-                S_RD0_L: begin
-                    rmval[7:0] <= in_rom ? rom_data
-                                         : dp_sel ? dp_rdata : iram_q;
-                    if (op_wide(opc)) st <= S_RD1;
-                    else              st <= S_EXEC;
-                end
-                S_RD1: begin
-                    bus_addr <= lin_ea + 20'd1;
-                    is_fetch <= 1'b0;
-                    st <= S_RD1_L;
-                end
-                S_RD1_L: begin
-                    rmval[15:8] <= in_rom ? rom_data
-                                          : dp_sel ? dp_rdata : iram_q;
+                S_RD_W: if (x_done) begin
+                    if (x_word) rmval      <= x_q;
+                    else        rmval[7:0] <= x_q[7:0];
                     st <= S_EXEC;
                 end
 
                 // ------------------------------------------ execute
                 S_EXEC: begin
-                    st <= S_OP;                        // default next
+                    logic taken;
+                    taken = 1'b0;
+                    st <= S_FIN;                       // default next
                     es_ovr <= 1'b0;
                     if (opc[7:3] == 5'b10111)
                         reg16[opc[2:0]] <= imm;        // mov r16,imm
@@ -463,19 +674,37 @@ module s32_v25 (
                             reg16[CX] <= reg16[CX] - 16'd1;
                             set_zs(reg16[CX] - 16'd1, 1'b1);
                         end
-                        8'hEB: ip <= ip + {{8{imm[7]}}, imm[7:0]};
-                        8'h75: if (!fl_z)
+                        8'hEB: begin
                             ip <= ip + {{8{imm[7]}}, imm[7:0]};
+                            taken = 1'b1;
+                        end
+                        8'h75: if (!fl_z) begin
+                            ip <= ip + {{8{imm[7]}}, imm[7:0]};
+                            taken = 1'b1;
+                        end
+                        8'h74: if (fl_z) begin         // be / jz (arf)
+                            ip <= ip + {{8{imm[7]}}, imm[7:0]};
+                            taken = 1'b1;
+                        end
+                        8'h73: if (!fl_c) begin        // bnc / jnc (arf,
+                            ip <= ip + {{8{imm[7]}}, imm[7:0]}; // dead code)
+                            taken = 1'b1;
+                        end
                         8'hEA: begin
                             ip <= imm;
                             sreg[SEG_CS] <= disp;
+                            taken = 1'b1;
                         end
                         8'hE8: begin
                             pushv <= ip;               // return address
                             ip <= ip + imm;
-                            st <= S_PUSH0;
+                            taken = 1'b1;
+                            st <= S_PUSH;
                         end
-                        8'hC3: st <= S_POP0;
+                        8'hC3: begin
+                            taken = 1'b1;
+                            st <= S_POP;
+                        end
                         8'h8D: reg16[mrm_reg] <= ea_off;
                         8'h8E: sreg[mrm_reg[1:0]] <=
                                    (mrm_mod == 2'b11)
@@ -492,7 +721,7 @@ module s32_v25 (
                             else begin
                                 wr_val <= {8'd0, r8_get(mrm_reg)};
                                 wr_lin <= lin_ea;
-                                st <= S_WR0;
+                                st <= S_WR;
                             end
                         end
                         8'h3B: begin
@@ -509,6 +738,14 @@ module s32_v25 (
                                              ? r8_get(mrm_rm)
                                              : rmval[7:0]}, 1'b0);
                             fl_c <= gr[17]; set_zs(gr[15:0], 1'b0);
+                        end
+                        8'h03: begin                   // add r16, rm16 (arf)
+                            gr = grp_alu(3'd0, reg16[mrm_reg],
+                                         (mrm_mod == 2'b11)
+                                             ? reg16[mrm_rm] : rmval,
+                                         1'b1);
+                            fl_c <= gr[17]; set_zs(gr[15:0], 1'b1);
+                            reg16[mrm_reg] <= gr[15:0];
                         end
                         8'h02: begin                   // add r8, rm8
                             gr = grp_alu(3'd0,
@@ -542,80 +779,72 @@ module s32_v25 (
                                 end else begin
                                     wr_val <= gr[15:0];
                                     wr_lin <= lin_ea;
-                                    st <= S_WR0;
+                                    st <= S_WR;
                                 end
                             end
                         end
                         default: begin
+                            halted <= 1'b1;
                             st <= S_HALT;
                         end
                     endcase
+                    // the instruction's count; a stack operand's waits
+                    // for CALL/RET, the memory operand's otherwise
+                    e_need  <= exu_clocks(opc, mrm_mod, mrm_reg,
+                                          (opc == 8'hE8 || opc == 8'hC3)
+                                              ? dwaits(lin_sp)
+                                              : dwaits(lin_ea),
+                                          taken, prc[6]);
+                    e_flush <= taken;
                 end
 
                 // ----------------------------------- memory writes
-                S_WR0: begin
-                    bus_addr <= wr_lin;
-                    is_fetch <= 1'b0;
-                    bus_wdata <= wr_val[7:0];
-                    bus_we <= 1'b1;
-                    dp_we_r <= (wr_lin[19:16] == 4'h1);
-                    if (op_wide(opc)) st <= S_WR1;
-                    else              st <= S_OP;
+                S_WR: begin
+                    x_req <= 1'b1; x_we <= 1'b1; x_addr <= wr_lin;
+                    x_word <= op_wide(opc); x_wdata <= wr_val;
+                    x_done <= 1'b0;
+                    st <= S_WR_W;
                 end
-                S_WR1: begin
-                    bus_addr <= wr_lin + 20'd1;
-                    is_fetch <= 1'b0;
-                    bus_wdata <= wr_val[15:8];
-                    bus_we <= 1'b1;
-                    dp_we_r <= ((wr_lin + 20'd1) >> 16 == 4'h1);
-                    st <= S_OP;
-                end
+                S_WR_W: if (x_done) st <= S_FIN;
 
                 // ---------------------------------------- push/pop
-                S_PUSH0: begin                         // high byte first
-                    bus_addr <= ({4'd0, sreg[SEG_SS]} << 4)
-                              + {4'd0, reg16[SP] - 16'd1};
-                    is_fetch <= 1'b0;
-                    bus_wdata <= pushv[15:8];
-                    bus_we <= 1'b1;
-                    dp_we_r <= ((({4'd0, sreg[SEG_SS]} << 4)
-                               + {4'd0, reg16[SP] - 16'd1}) >> 16
-                               == 4'h1);
-                    st <= S_PUSH1;
+                // A word on the 8-bit bus goes out low byte first, at the
+                // ascending address, as MAME's write stream shows (golden
+                // sim/golden/arf_v25). The order is observable: the stack
+                // sits on the MB8421's $7FE/$7FF interrupt flags (Q44).
+                S_PUSH: begin
+                    x_req <= 1'b1; x_we <= 1'b1; x_word <= 1'b1;
+                    x_addr <= ({4'd0, sreg[SEG_SS]} << 4)
+                            + {4'd0, reg16[SP] - 16'd2};
+                    x_wdata <= pushv; x_done <= 1'b0;
+                    st <= S_PUSH_W;
                 end
-                S_PUSH1: begin
-                    bus_addr <= ({4'd0, sreg[SEG_SS]} << 4)
-                              + {4'd0, reg16[SP] - 16'd2};
-                    is_fetch <= 1'b0;
-                    bus_wdata <= pushv[7:0];
-                    bus_we <= 1'b1;
-                    dp_we_r <= ((({4'd0, sreg[SEG_SS]} << 4)
-                               + {4'd0, reg16[SP] - 16'd2}) >> 16
-                               == 4'h1);
+                S_PUSH_W: if (x_done) begin
                     reg16[SP] <= reg16[SP] - 16'd2;
-                    st <= S_OP;
+                    st <= S_FIN;
                 end
-                S_POP0: begin
-                    bus_addr <= ({4'd0, sreg[SEG_SS]} << 4)
-                              + {4'd0, reg16[SP]};
-                    is_fetch <= 1'b0;
-                    st <= S_POP0_L;
+                S_POP: begin
+                    x_req <= 1'b1; x_we <= 1'b0; x_word <= 1'b1;
+                    x_addr <= lin_sp; x_done <= 1'b0;
+                    st <= S_POP_W;
                 end
-                S_POP0_L: begin
-                    ip[7:0] <= in_rom ? rom_data
-                                      : dp_sel ? dp_rdata : iram_q;
-                    st <= S_POP1;
-                end
-                S_POP1: begin
-                    bus_addr <= ({4'd0, sreg[SEG_SS]} << 4)
-                              + {4'd0, reg16[SP] + 16'd1};
-                    is_fetch <= 1'b0;
-                    st <= S_POP1_L;
-                end
-                S_POP1_L: begin
-                    ip[15:8] <= in_rom ? rom_data
-                                       : dp_sel ? dp_rdata : iram_q;
+                S_POP_W: if (x_done) begin
+                    ip <= x_q;
                     reg16[SP] <= reg16[SP] + 16'd2;
+                    st <= S_FIN;
+                end
+
+                // ------------------------------- end of instruction
+                // the count has run out and every data cycle is done; a
+                // taken transfer clears the queue and refetches at ip
+                S_FIN: if (e_el >= e_need) begin
+                    if (fin_flush) begin
+                        flush = 1'b1;
+                        f_ip <= ip;
+                        if (b_busy && b_kind == B_FETCH)
+                            b_drop <= 1'b1;    // its T2 is still to come
+                    end
+                    e_flush <= 1'b0;
                     st <= S_OP;
                 end
 
@@ -623,6 +852,18 @@ module s32_v25 (
 
                 default: st <= S_HALT;
             endcase
+
+            // ======================================= queue update
+            if (flush) begin
+                q_rd <= 3'd0; q_wr <= 3'd0; q_cnt <= 3'd0;
+            end else begin
+                if (push) begin
+                    q[q_wr] <= pb;
+                    q_wr <= q_wr + 3'd1;
+                end
+                if (pop) q_rd <= q_rd + 3'd1;
+                q_cnt <= q_cnt + {2'd0, push} - {2'd0, pop};
+            end
         end
     end
 
@@ -633,7 +874,7 @@ module s32_v25 (
         if (opc == 8'h80 || opc == 8'h81 || opc == 8'h83)
             after_ea = S_I1;         // immediate; memory read follows
         else if (mod != 2'b11 && op_loads(opc))
-            after_ea = S_RD0;
+            after_ea = S_RD;
         else
             after_ea = S_EXEC;
     endfunction

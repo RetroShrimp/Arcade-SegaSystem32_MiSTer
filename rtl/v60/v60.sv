@@ -69,7 +69,9 @@ module v60 (
         S_TRAP,
         // appended AFTER S_TRAP so every pre-existing state keeps its
         // encoding (HUD/bench prints of dut.u_v60.state stay comparable)
-        S_STR_FILL
+        S_STR_FILL,
+        S_CALL2,                      // call: push next PC, SP -= 8, jump
+        S_RET3                        // ret: SP += 8 + num (after PC, AP pops)
     } state_e;
     state_e state;
 
@@ -398,7 +400,10 @@ module v60 (
         (exec_q == 8'd19) || (exec_q == 8'd25) || (exec_q == 8'd26) ||
         (exec_q >= 8'd50 && exec_q <= 8'd52) ||  // movcu/movcd/skpcu
         (exec_q == 8'd61) ||                     // cmpc: src string address
-        (exec_q == 8'd62);                       // movcfu: src string address
+        (exec_q == 8'd62) ||                     // movcfu: src string address
+        (exec_q == 8'd63);                       // call: target address (op2,
+                                                 // the arg list, is address-
+                                                 // only via !op2_need_val)
 
     // op2 old value needed from MEMORY (RMW, bit ops, xch, updpsw, test1);
     // register destinations always read via the port (width merge), which
@@ -604,8 +609,14 @@ module v60 (
                 if (exec_q == 8'd46) begin          // retis: pop PC
                     mem_re = 1'b1; mem_addr = rd_a; mem_size = 3'd4;
                 end
-                if (exec_q == 8'd27) begin          // rsr: pop PC
+                if (exec_q == 8'd27 || exec_q == 8'd45) begin
+                    // rsr / ret: pop PC (ret then pops AP via S_RETIS1/2)
                     mem_re = 1'b1; mem_addr = rd_a; mem_size = 3'd4;
+                end
+                if (exec_q == 8'd63) begin          // call: [-SP] <- AP
+                    ra_b = 5'd29;
+                    mem_we = 1'b1; mem_addr = rd_a - 32'd4; mem_size = 3'd4;
+                    mem_wdata = rd_b;
                 end
                 if (exec_q == 8'd38) begin          // pop: read [SP]
                     mem_re = 1'b1; mem_addr = rd_a; mem_size = 3'd4;
@@ -644,6 +655,12 @@ module v60 (
                 mem_re = 1'b1; mem_addr = rd_a + 32'd4; mem_size = 3'd4;
             end
             S_RETIS2: ra_a = 5'd31;                 // SP += 8 + adj needs SP
+            S_CALL2: begin                          // call: [-SP] <- next PC
+                ra_a = 5'd31;                       // (SP not yet written)
+                mem_we = 1'b1; mem_addr = rd_a - 32'd8; mem_size = 3'd4;
+                mem_wdata = pc + {26'd0, len_q};
+            end
+            S_RET3: ra_a = 5'd31;                   // ret: SP += 8 + num
             S_WB: begin
                 if ((wb_to_op1 ? op1_ismem : op2_ismem)) begin
                     mem_we = 1'b1;
@@ -1062,7 +1079,19 @@ module v60 (
                                 nmi_busy <= 1'b0;       // NMI window
                                 state <= S_RETIS1;      // reopens
                             end
-                            8'd44, 8'd45: begin
+                            8'd45: begin                // ret: [SP] read comb;
+                                state <= S_RETIS1;      // shares retis's pops,
+                            end                         // AP in place of PSW
+                            8'd63: begin
+                                // call (NEC V60 manual p.7-15; MAME opCALL):
+                                // [-SP] <- AP (write comb), AP <- EA(arg),
+                                // then S_CALL2 pushes next PC and jumps.
+                                // Arabian Fight, PC FFCB19.
+                                wen <= 1'b1; waddr <= 5'd29;
+                                wdata <= op2_ea_q;
+                                state <= S_CALL2;
+                            end
+                            8'd44: begin                // halt
                                 trap <= 1'b1; trap_op <= exec_q;
                                 state <= S_TRAP;
                             end
@@ -1128,9 +1157,29 @@ module v60 (
                     state <= S_RETIS2;
                 end
                 S_RETIS2: begin                     // consume popped PSW
-                    psw_wen <= 1'b1; psw_wdata <= mem_rdata;
+                    if (exec_q == 8'd45) begin
+                        // ret (NEC V60 manual p.7-86; MAME opRET): the
+                        // second word is AP (R29), not the PSW. One write
+                        // port, so SP follows in S_RET3.
+                        wen <= 1'b1; waddr <= 5'd29;
+                        wdata <= mem_rdata;
+                        state <= S_RET3;
+                    end else begin
+                        psw_wen <= 1'b1; psw_wdata <= mem_rdata;
+                        wen <= 1'b1; waddr <= 5'd31;
+                        wdata <= rd_a + 32'd8 + op1_val;
+                        state <= S_FETCH;
+                    end
+                end
+                S_RET3: begin                       // ret: discard num bytes
                     wen <= 1'b1; waddr <= 5'd31;
                     wdata <= rd_a + 32'd8 + op1_val;
+                    state <= S_FETCH;
+                end
+                S_CALL2: begin                      // call: next PC pushed
+                    wen <= 1'b1; waddr <= 5'd31;    // comb; SP -= 8, jump
+                    wdata <= rd_a - 32'd8;
+                    pc <= op1_ea_q;
                     state <= S_FETCH;
                 end
 
