@@ -31,7 +31,8 @@
 //   E00000-E0000F  315-5385 memory timing registers
 //
 // Burning Rival's FD1149 protection module (prot_brival): see the
-// "FD1149 flag words" block below.
+// "FD1149 flag words" block below. Dark Edge's (prot_darkedge): the
+// "FD1149 vblank writes" block.
 
 module s32_v60bus (
     input  logic        clk,
@@ -130,7 +131,16 @@ module s32_v60bus (
 
     // ---- Burning Rival's FD1149 protection module (from the .mra's board
     //      descriptor bit 4); 0 on every other game
-    input  logic        prot_brival
+    input  logic        prot_brival,
+
+    // ---- Dark Edge's FD1149 protection module (descriptor bit 5): the
+    //      $A00000 window reads $FFFF, and at each vblank-in (fd_vbl, one
+    //      clk) the module writes work RAM. bcu_pend is the bus unit's
+    //      queued-strobe flag (v60_bcu f_pend): the module takes the bus
+    //      only when no V60 cycle is queued (see "FD1149 vblank writes")
+    input  logic        prot_darkedge,
+    input  logic        fd_vbl,
+    input  logic        bcu_pend
 );
 
     // ------------------------------------------------------ work RAM
@@ -223,6 +233,9 @@ module s32_v60bus (
         else if (a < 24'h600000)                     region_of = R_SPRCTL;
         else if (a[23:20] == 4'h6)                   region_of = R_VID;
         else if (a >= 24'h700000 && a < 24'h800000)  region_of = R_SHM;
+        // Dark Edge's FD1149 answers the mailbox window instead: reads
+        // $FFFF, writes ignored (MAME darkedge_protection_r/_w)
+        else if (a[23:19] == 5'b10100 && prot_darkedge) region_of = R_OPEN;
         else if (a[23:19] == 5'b10100)               region_of = R_DPRAM;
         else if (a[23:20] == 4'hC && a[6:0] < 7'h20) region_of = R_IO;
         else if (a[23:20] == 4'hC && a[6:3] == 4'b1100)
@@ -270,7 +283,8 @@ module s32_v60bus (
     // ------------------------------------------------- request queue
     typedef enum logic [3:0] {
         A_IDLE, A_WRAM1, A_WRAM2, A_SUB, A_SUB_W, A_SUB_L, A_DONE,
-        A_ROMW, A_OPENW, A_WRAMX, A_SUB_P, A_WRAM1B
+        A_ROMW, A_OPENW, A_WRAMX, A_SUB_P, A_WRAM1B,
+        A_FD0, A_FD1, A_FD2, A_FD3
     } astate_e;
     astate_e ast;
 
@@ -328,6 +342,34 @@ module s32_v60bus (
                 brival_clr[8*k +: 16] = 16'hFFFF;
         end
     end
+
+    // ------------------------------------- FD1149 vblank writes (darkedge)
+    // Dark Edge carries an FD1149 too (317-0204), as undumped as
+    // Burning Rival's (docs/darkedge-bringup.md §2). MAME models it with a hook
+    // that runs at every vblank-in (segas32_m.cpp darkedge_fd1149_vblank,
+    // called from start_of_vblank_int): word 0 to $20F072 and $20F082, and
+    // if byte $20A12C is nonzero it is decremented, with byte $20A12E set
+    // to 1 when it reaches 0. The program uses $20F072 as a request flag
+    // (set after its write to $A00000, work skipped while it is still set)
+    // and $20A12C as a frame countdown.
+    //   The module has bus access, so the core does what such a module
+    // would: it takes the bus between V60 bus cycles and does the writes.
+    // It starts only from A_IDLE with no strobe this clk and none queued in
+    // the bus unit (bcu_pend low), so the bus unit cannot strobe at the
+    // same edge; bus_hold is high for the four states that follow, which
+    // holds the next strobe off. The hook never writes mem_rdata, so a V60
+    // read that has finished but is not yet captured keeps its data.
+    // MAME runs the hook between V60 instructions; here it can fall
+    // between the bus cycles of one instruction. No instruction the
+    // program uses on these four bytes is a read-modify-write.
+    localparam logic [13:0] FD_W072 = 14'h3C1C;   // $20F072 >> 2, lanes 2-3
+    localparam logic [13:0] FD_W082 = 14'h3C20;   // $20F082 >> 2, lanes 2-3
+    localparam logic [13:0] FD_W12C = 14'h284B;   // $20A12C >> 2: lane 0 =
+                                                  // $A12C, lane 2 = $A12E
+    // Four states: A_FD0 writes $F072 and sets up the $A12C read, A_FD1
+    // writes $F082, A_FD2 waits, A_FD3 has the byte (A_WRAMX..A_WRAM2's
+    // read timing) and writes the countdown back.
+    logic fd_pend;                   // a vblank-in is owed its writes
 
     // wram unaligned assembly (q_addr-based, captured in A_WRAM2)
     logic [63:0] wram_pair;
@@ -475,6 +517,8 @@ module s32_v60bus (
     // bus_hold is high, so every strobe seen in A_IDLE is a new request.
     logic req_new;
     assign req_new = (mem_re || mem_we);
+    // the FD1149 takes the bus (see "FD1149 vblank writes")
+    wire  fd_go = fd_pend && !req_new && !bcu_pend;
 
     // ------------------------------------------ random number generator
     // $D80000-$DFFFFF: free-running 16-bit maximal-length Galois LFSR
@@ -496,7 +540,11 @@ module s32_v60bus (
         if (rst) begin
             ast <= A_IDLE;
             romf_pc_r <= 24'd0;
+            fd_pend <= 1'b0;
         end else begin
+            if (fd_vbl && prot_darkedge) fd_pend <= 1'b1;
+            else if (ast == A_IDLE && fd_go) fd_pend <= 1'b0;
+
             unique case (ast)
                 A_IDLE: if (req_new && v60_ph) begin
                     q_addr  <= p;
@@ -555,6 +603,40 @@ module s32_v60bus (
                             // port outputs first.
                             ast <= A_SUB_P;
                     endcase
+                end else if (fd_go)
+                    ast <= A_FD0;
+
+                // FD1149 vblank writes (Dark Edge): see the block above
+                A_FD0: begin                // $20F072 = 0; read $20A12C
+                    for (int l = 2; l < 4; l = l + 1) begin
+                        wram_wen[l]   <= 1'b1;
+                        wram_waddr[l] <= FD_W072;
+                        wram_wd[l]    <= 8'd0;
+                    end
+                    wram_aa <= FD_W12C;     // lane 0 is not written here
+                    ast <= A_FD1;
+                end
+                A_FD1: begin                // $20F082 = 0
+                    for (int l = 2; l < 4; l = l + 1) begin
+                        wram_wen[l]   <= 1'b1;
+                        wram_waddr[l] <= FD_W082;
+                        wram_wd[l]    <= 8'd0;
+                    end
+                    ast <= A_FD2;
+                end
+                A_FD2: ast <= A_FD3;        // OREGA stage
+                A_FD3: begin                // countdown byte in lane 0
+                    if (wram_qa[7:0] != 8'd0) begin
+                        wram_wen[0]   <= 1'b1;
+                        wram_waddr[0] <= FD_W12C;
+                        wram_wd[0]    <= wram_qa[7:0] - 8'd1;
+                        if (wram_qa[7:0] == 8'd1) begin   // reached 0:
+                            wram_wen[2]   <= 1'b1;        // $20A12E = 1
+                            wram_waddr[2] <= FD_W12C;
+                            wram_wd[2]    <= 8'd1;
+                        end
+                    end
+                    ast <= A_IDLE;
                 end
 
                 A_ROMW:

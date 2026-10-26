@@ -8,7 +8,8 @@
     <players>2</players>
     <joystick>8</joystick>
 
-    <buttons names="Punch,Kick,-,Start,Coin,Service,Test" default="A,B,X,Start,R,L,Select"/>
+    <buttons names="Punch,Kick,-,Start,Coin,Service,Test" default="A,B,Start,R,L,Select"/>
+
     <region>US</region>
 
     <rom index="1">

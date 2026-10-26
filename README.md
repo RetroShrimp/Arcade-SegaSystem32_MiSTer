@@ -4,13 +4,14 @@ An FPGA recreation of Sega's **System 32** arcade board for the
 [MiSTer](https://mister-devel.github.io/MkDocs_MiSTer/) platform, built
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
-**Arabian Fight** and **Burning Rival**, which use the same board.
+**Arabian Fight**, **Burning Rival** and **Dark Edge**, which use the same
+board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
 system and the protection module of Golden Axe and Arabian Fight, each running at its original
-clock. (Burning Rival's protection module has never been read out; see
-Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
+clock. (The protection modules of Burning Rival and Dark Edge have never
+been read out; see Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
 it is the first FPGA implementation of that CPU.
 
 ## Supported games
@@ -32,6 +33,8 @@ it is the first FPGA implementation of that CPU.
 | `Arabian Fight (Japan).mra` | `arabfgtj` | not yet tested on hardware |
 | `Burning Rival.mra` | `brival` | tested on hardware |
 | `Burning Rival (Japan).mra` | `brivalj` | not yet tested on hardware |
+| `Dark Edge.mra` | `darkedge` | tested on hardware |
+| `Dark Edge (Japan).mra` | `darkedgej` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program). The US
@@ -55,8 +58,9 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
 3. Put the ROM zips in `games/mame/`: `ga2.zip` (plus `ga2u.zip` or
    `ga2j.zip` for the regional sets), `spidman.zip` (plus `spidmanu.zip` or
    `spidmanj.zip`), `holo.zip`, `svf.zip` (plus `svfo.zip` or
-   `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`), and
-   `brival.zip` (plus `brivalj.zip`).
+   `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`),
+   `brival.zip` (plus `brivalj.zip`), and `darkedge.zip` (plus
+   `darkedgej.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -69,7 +73,7 @@ report.
 ## Controls
 
 Golden Axe, Spider-Man and Arabian Fight take up to four players, Holosseum,
-Super Visual Football and Burning Rival two. Each player
+Super Visual Football, Burning Rival and Dark Edge two. Each player
 uses the D-pad or stick plus these buttons. The MRAs map them to a pad by
 default, and MiSTer's input mapping can change that:
 
@@ -93,6 +97,12 @@ Heavy Punch to Y, X and L, Light, Medium and Heavy Kick to B, A and R, Start
 to Start and Coin to Select. That uses every pad button, so Service and Test
 have no default: map them in MiSTer's input menu, or use the OSD Service
 option.
+
+**Dark Edge** uses five buttons per player, named as on Sega's cabinet
+stickers: Weak Punch, Strong Punch, Jump, Weak Kick and Strong Kick. Its
+MRA maps the punches to Y and X, the kicks to B and A, Jump to R, Start to
+Start and Coin to Select. As with Burning Rival, Service and Test have no
+default.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -206,6 +216,12 @@ Things you may notice, or may want to know:
   board switches between widths, are not documented; the core switches once
   per frame, during vertical blanking. CRT Adjust applies to the 320-pixel
   mode only; a 416-pixel picture is passed through unchanged.
+- **Dark Edge's protection** is also an FD1149 module whose program has
+  never been read out. At the start of every vertical blank it writes to
+  the game's work RAM, clearing two words the game waits on and counting
+  down a timer; without those writes the game's screen stays black. The
+  core makes the same writes at the same moment, as MAME does, between the
+  main CPU's bus cycles.
 - **Not implemented**: the parts of the V25 that the Golden Axe and Arabian
   Fight protection programs do not use.
 
@@ -273,6 +289,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

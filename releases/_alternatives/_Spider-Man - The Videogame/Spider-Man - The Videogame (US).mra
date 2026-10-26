@@ -7,7 +7,8 @@
     <manufacturer>Sega</manufacturer>
     <players>4</players>
     <joystick>8</joystick>
-    <buttons names="Attack,Jump,-,Start,Coin,Service,Test" default="A,B,X,Start,R,L,Select"/>
+    <buttons names="Attack,Jump,-,Start,Coin,Service,Test" default="A,B,Start,R,L,Select"/>
+
     <region>US</region>
 
     <rom index="1">

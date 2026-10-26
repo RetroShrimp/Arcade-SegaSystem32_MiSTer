@@ -171,6 +171,7 @@ pll pll
 // path runs only while rst_core is asserted).
 wire reset_req = RESET | status[0] | buttons[1];
 
+
 reg  rst_ctrl_r = 1;
 always @(posedge clk_sys) rst_ctrl_r <= ~pll_locked | RESET;
 
@@ -312,6 +313,7 @@ s32_ddrload ddrload (
 reg dl_q = 0;
 always @(posedge clk_sys) dl_q <= ioctl_download;
 
+
 // ---- NVRAM file (.mra <nvram index="2" size="8320">):
 //   0-127     93C46 EEPROM (64 x 16 bits, little-endian bytes)
 //   128-8319  Z80 work RAM (battery-backed on the real board)
@@ -384,7 +386,9 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          and EXTRA1/EXTRA3 are unused (MAME INPUT_PORTS_START(brival)).
 //   bit 4  FD1149 protection module 317-0212 (Burning Rival): s32_v60bus's
 //          flag-word rule (MAME init_brival). Board build, like bit 2.
-//   bits 5-7  reserved, must be 0
+//   bit 5  FD1149 protection module 317-0204 (Dark Edge): s32_v60bus's
+//          vblank writes and $A00000 window (MAME init_darkedge)
+//   bits 6-7  reserved, must be 0
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -499,6 +503,7 @@ s32_board board
 	.cab_vmirror(board_cfg[1]),
 	.prot_arf(board_cfg[2]),
 	.prot_brival(board_cfg[4]),
+	.prot_darkedge(board_cfg[5]),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),

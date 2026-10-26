@@ -399,6 +399,7 @@ module v60 (
     assign op1_addr_only =
         (exec_q == 8'd19) || (exec_q == 8'd25) || (exec_q == 8'd26) ||
         (exec_q >= 8'd50 && exec_q <= 8'd52) ||  // movcu/movcd/skpcu
+        (exec_q == 8'd64) ||                     // skpcd: src string address
         (exec_q == 8'd61) ||                     // cmpc: src string address
         (exec_q == 8'd62) ||                     // movcfu: src string address
         (exec_q == 8'd63);                       // call: target address (op2,
@@ -413,7 +414,7 @@ module v60 (
         is_alu || is_shift || is_md ||
         (exec_q >= 8'd33 && exec_q <= 8'd36) ||
         (exec_q == 8'd41) || (exec_q == 8'd43) ||
-        (exec_q == 8'd52);                          // skpcu: char value
+        (exec_q == 8'd52) || (exec_q == 8'd64);     // skpcu/skpcd: char value
 
     // combinational execute result + flags
     logic [31:0] exec_res;
@@ -509,6 +510,7 @@ module v60 (
     logic [31:0] str_c1;              // cmpc: src element awaiting its dst
     logic        str_search;          // scan polarity: 0 = skip (stop on !=),
                                       // 1 = search (stop on ==)  [schcu]
+    logic        str_down;            // scan from the tail (skpcd)
     logic [31:0] str_base1, str_base2;
     logic [31:0] str_i;               // element index
     logic [31:0] str_cnt, str_len2;   // len1 (element count) and len2
@@ -516,10 +518,11 @@ module v60 (
     logic [31:0] str_elem;            // element size in bytes
     logic [7:0]  ext1_b, ext2_b;      // F7a length extension bytes
 
-    // element addresses per mode (down-copy walks high-to-low)
+    // element addresses per mode (down-copy and the downward scan walk
+    // high-to-low; a scan's str_dest is its length)
     logic [31:0] str_a1, str_a2;
     always_comb begin
-        if (str_mode == 2'd1) begin
+        if (str_mode == 2'd1 || str_down) begin
             str_a1 = str_base1 + (str_dest - 32'd1 - str_i) * str_elem;
             str_a2 = str_base2 + (str_dest - 32'd1 - str_i) * str_elem;
         end else begin
@@ -1030,7 +1033,8 @@ module v60 (
                                     | (op1_val & op2_val & pswm2(b0));
                                 pc <= next_seq_pc; state <= S_FETCH;
                             end
-                            8'd50, 8'd51, 8'd52, 8'd55, 8'd61, 8'd62: begin
+                            8'd50, 8'd51, 8'd52, 8'd55, 8'd61, 8'd62,
+                            8'd64: begin
                                 // movcu/movcd/skpcu/schcu — schcu (55) is
                                 // the skip scan with inverted match
                                 // polarity (stop on ==, not !=); identical
@@ -1041,11 +1045,14 @@ module v60 (
                                 // (mode 3, S_STR_RD2/S_STR_CMP).
                                 // movcfu (62) is movcu plus a fill phase:
                                 // mode 0 with str_fill (S_STR_FILL).
+                                // skpcd (64) is skpcu scanning from the
+                                // tail (str_down; see S_STR_END1/END2).
                                 str_mode <= (exec_q == 8'd50 ||
                                              exec_q == 8'd62) ? 2'd0
                                           : (exec_q == 8'd51) ? 2'd1
                                           : (exec_q == 8'd61) ? 2'd3 : 2'd2;
                                 str_search <= (exec_q == 8'd55);
+                                str_down <= (exec_q == 8'd64);
                                 str_fill <= (exec_q == 8'd62);
                                 str_base1 <= op1_ea_q;
                                 str_base2 <= op2_ea_q;
@@ -1353,7 +1360,14 @@ module v60 (
                             + (str_fill ? str_dest : str_i) * str_elem;
                         2'd1: wdata <= str_base1
                             + (str_cnt - str_i - 32'd1) * str_elem;
-                        default: wdata <= str_base1 + str_i * str_elem;
+                        // skpcd (NEC V60 manual p.7-102, SKPC): the
+                        // element that ended the scan, counted from the
+                        // tail; if none did, the one past the string in
+                        // the scan direction, src - elem (str_i = cnt).
+                        // MAME opSEARCHDB/DH agree on R28.
+                        default: wdata <= str_down
+                            ? str_base1 + (str_cnt - str_i - 32'd1) * str_elem
+                            : str_base1 + str_i * str_elem;
                     endcase
                     state <= S_STR_END2;
                 end
@@ -1364,7 +1378,13 @@ module v60 (
                         2'd1: wdata <= str_base2
                             + (str_len2 - str_i - 32'd1) * str_elem;
                         2'd3: wdata <= str_base2 + str_i * str_elem; // cmpc
-                        default: wdata <= str_i;    // skpcu: element index
+                        // skpcu/skpcd: "the number of characters
+                        // (offset) from the start position to the skip
+                        // end position" (manual p.7-102). For skpcd the
+                        // start is the tail, so this is NOT the element's
+                        // index from the head, which MAME writes
+                        // (opSEARCHDH R27 = i); docs/OPEN-QUESTIONS.md Q47.
+                        default: wdata <= str_i;
                     endcase
                     pc <= next_seq_pc; state <= S_FETCH;
                 end

@@ -18,6 +18,7 @@
 // port loads the ROM image while the core is held in reset (S32.sv drives
 // it).
 
+
 module s32_board (
     input  logic        clk,
     input  logic        rst_core,     // core reset (held during load)
@@ -44,6 +45,7 @@ module s32_board (
     input  logic [24:0] ld_addr,
     input  logic [7:0]  ld_data,
     output logic        ld_rdy,
+
 
     // ---- video out
     output logic        de,
@@ -78,6 +80,9 @@ module s32_board (
     // Burning Rival's FD1149 model (S32.sv board descriptor bit 4) — see
     // s32_v60bus
     input  logic        prot_brival,
+    // Dark Edge's FD1149 model (board descriptor bit 5) — see s32_v60bus
+    input  logic        prot_darkedge,
+
 
     // ---- EEPROM image
     output logic [15:0] ee_dump_data,
@@ -162,7 +167,7 @@ module s32_board (
         .fbr_re(fbr_re), .fbr_x(fbr_x), .fbr_line(fbr_line),
         .fbr_data(fbr_data), .fb_top_line(fb_top_line),
         .cab_vmirror(cab_vmirror), .prot_arf(prot_arf),
-        .prot_brival(prot_brival),
+        .prot_brival(prot_brival), .prot_darkedge(prot_darkedge),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
         .audio_l(audio_l), .audio_r(audio_r),
@@ -394,6 +399,7 @@ module s32_board (
 
     // (instance below, after cen_spr's terms exist)
 
+
     // ========================================= frame buffer line cache
     // Two line buffers, so a whole line is ready before the beam reaches it
     // (a refill takes ~400 clk; the beam needs the line's first pixel within
@@ -448,6 +454,7 @@ module s32_board (
     wire pf_victim = !fbl_vv[0] ? 1'b0
                    : !fbl_vv[1] ? 1'b1 : 1'b0;   // reactive: spare a valid
     wire pf_nsrv  = ~fbs_sel;                    // the non-serving bank
+
 
     // The line comes from DDR3, so SDRAM port 2 is unused (which frees about
     // 12% of SDRAM time per frame).
@@ -570,6 +577,7 @@ module s32_board (
     wire [15:0] l0_word = {l0q[15] & ~l0shq, l0q[14:0]};
     assign fbr_data = l0_sel_q ? l0_word : fbl_q[16 * fbr_xl_q +: 16];
 
+
     // ============================== frame buffer write path in SDRAM
     // Used only when the frame buffer is kept in SDRAM; with the DDR3 frame
     // buffer (s32_fbddr) nothing is fed in, so fwq stays empty and dr idle.
@@ -628,6 +636,7 @@ module s32_board (
     // DDR3 frame buffer: backpressure comes from s32_fbddr, and the SDRAM
     // write path below is never fed.
     assign fbw_ok = fbddr_wok;
+
 
     // ---- accept: never blocks the engine except via fbw_ok above
     always_ff @(posedge clk) begin
@@ -839,6 +848,7 @@ module s32_board (
         .quiet(fbddr_quiet)
     );
 
+
     // ---- Z80 sound-ROM cache, on SDRAM read port 5. zc_hold stalls only
     // the Z80 (inside s32_sys).
     logic [21:0]  zc_addr;
@@ -858,6 +868,7 @@ module s32_board (
         .rf_req(zc_req), .rf_addr(zc_rfa),
         .rf_data(rdata), .rf_done(zc_done)
     );
+
 
     // ---- V25 MCU ROM cache: shares port 5 with the Z80 cache via a
     // grant-owner register (same pattern as p1_owner; Z80 priority)
@@ -913,5 +924,6 @@ module s32_board (
     assign p5_urgent    = (p5_owner == 3'd4) && vram_rf_urg;
     assign vram_pf      = 1'b0;
     assign vram_pending = 1'b0;
+
 
 endmodule

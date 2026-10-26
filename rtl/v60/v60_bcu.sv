@@ -77,7 +77,11 @@ module v60_bcu (
     output logic [31:0] f_wdata,
     output logic [2:0]  f_size,
     input  logic [31:0] f_rdata,
-    input  logic        f_hold
+    input  logic        f_hold,
+    // a strobe is queued: it goes out on the first clk f_hold is low. Lets
+    // another bus master (Dark Edge's FD1149 model in s32_v60bus) take the
+    // bus without racing a strobe: with f_pend low there is none this edge.
+    output logic        f_pend
 );
 
     // ----------------------------------------------------- client select
@@ -182,6 +186,7 @@ module v60_bcu (
     assign pf_grant = accept_fetch;
     assign pf_done  = finishing && serving_fetch;
 
+    assign f_pend = pend_stb;
     assign f_re = f_stb && !t_we;
     assign f_we = f_stb && t_we;
     assign f_fetch = serving_fetch;   // valid while run (the fabric samples

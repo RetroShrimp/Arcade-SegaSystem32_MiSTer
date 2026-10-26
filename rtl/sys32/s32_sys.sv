@@ -81,6 +81,9 @@ module s32_sys (
     // ---- Burning Rival's FD1149 protection model (board descriptor bit 4).
     // See s32_v60bus's "FD1149 flag words".
     input  logic        prot_brival,
+    // ---- Dark Edge's FD1149 protection model (board descriptor bit 5).
+    // See s32_v60bus's "FD1149 vblank writes".
+    input  logic        prot_darkedge,
 
     // ---- video out
     output logic        de,
@@ -179,6 +182,7 @@ module s32_sys (
     // rest of the machine sees the real part's 16-bit T1-T3 bus cycles on
     // the b60_* wires.
     logic         bcu_busy;
+    logic         bcu_pend;      // bus unit has a strobe queued (FD1149 model)
     logic         b60_re, b60_we;
     logic [31:0]  b60_addr, b60_wdata, b60_rdata;
     logic [2:0]   b60_size;
@@ -269,10 +273,12 @@ module s32_sys (
         .pf_rdata(pf_rdata), .pf_done(pf_done),
         .f_re(b60_re), .f_we(b60_we), .f_addr(b60_addr),
         .f_wdata(b60_wdata), .f_size(b60_size), .f_fetch(b60_fetch),
-        .f_rdata(b60_rdata), .f_hold(bus_hold)
+        .f_rdata(b60_rdata), .f_hold(bus_hold), .f_pend(bcu_pend)
     );
 
     // ------------------------------------------------------ bus fabric
+    logic        ev_vbin, ev_vbout;   // vblank in/out events (s32_video);
+                                      // the fabric's FD1149 model uses ev_vbin
     logic        vid_sel, vid_we;
     logic        vram_cpu_hold;   // VRAM cache wait -> V60 bus vid_hold
     logic [23:1] vid_addr;
@@ -340,12 +346,13 @@ module s32_sys (
         .ppi_wdata(ppi_wdata), .ppi_rdata(ppi_rdata),
         .ic_sel(ic_sel), .ic_we(ic_we), .ic_addr(ic_addr),
         .ic_wdata(ic_wdata), .ic_rdata(ic_rdata),
-        .prot_brival(prot_brival)
+        .prot_brival(prot_brival),
+        .prot_darkedge(prot_darkedge), .fd_vbl(ev_vbin),
+        .bcu_pend(bcu_pend)
         , .vid_hold(vram_cpu_hold)
     );
 
     // --------------------------------------------- interrupt controller
-    logic ev_vbin, ev_vbout;
     logic z80_int_pulse;
     logic v60_irq_pulse;
 
