@@ -7,20 +7,26 @@
 // whole workload is about 21 MB/s, a few percent of that port.
 //
 // DDR3 latency is safe because the display side fetches a whole line ahead
-// (s32_board's line cache), so a fetch has a full 4,123-clk line to land;
+// (s32_board's line cache), so a fetch has a full 4,123-clk line (4,096 in
+// the 416-pixel mode) to land;
 // a DDR3 round trip is a few hundred clk. If this path ever starves, the
 // beam does not stall: it shows stale frame buffer words. Look for that in
 // the picture, not in stall counters.
 //
 // Three operations over one write coalescer:
-//   read_line   one 80-beat burst per scanline, returned as 40 128-bit line
-//               cache entries. Highest priority; ordered against pending
+//   read_line   one 80-beat burst per scanline (104 in the 416-pixel mode),
+//               returned as 40 (52) 128-bit line cache entries. Highest priority; ordered against pending
 //               writes by a bank compare.
 //   write_run   sprite pixels and the erase sweep. Both write in ascending x,
 //               so one coalescer serves both: 4 pixels per 64-bit beat,
 //               consecutive beats gathered into one burst.
-//   shadow_rmw  clears bit 15 of a stored pixel. It needs the stored word, so
-//               it is a full barrier plus a DDR round trip.
+//   shadow_rmw  clears bit 15 of stored pixels. It needs the stored word, so
+//               it is a full barrier plus a DDR round trip. Shadow writes to
+//               the same 64-bit beat merge into one RMW while it is still
+//               pending (sh_mask), so a shadow sprite's row costs one round
+//               trip per 4 pixels, not per pixel (Burning Rival's floor
+//               shadows: ~3,000 shadow pixels a frame overran the sprite
+//               frame budget at one RMW each, board bench SPRDEADLINE).
 //
 // Ordering: the scan reads the displayed bank while the engine draws the
 // hidden one, so they normally cannot conflict. Two cases can, and one rule
@@ -65,7 +71,8 @@ module s32_fbddr #(
     // RUNMAX is 16: at 64 Quartus builds the gather buffers from registers
     // and the design no longer fits. 16 beats is still 64 pixels per burst.
     parameter int          RUNMAX  = 16,       // beats per burst (64 px)
-    parameter int          LBEATS  = 80        // beats per scanline (320 px)
+    parameter int          LBEATS  = 80,       // beats per scanline (320 px)
+    parameter int          LBEATS_W = 104      // the same for 416 px (wide)
 ) (
     input  logic         clk,
     input  logic         rst,        // rst_core
@@ -88,8 +95,9 @@ module s32_fbddr #(
     input  logic         rf_req,     // level, held until rf_done
     input  logic [7:0]   rf_line,
     input  logic         rf_bank,
+    input  logic         rf_wide,    // 416-pixel mode: LBEATS_W beats a line
     output logic         rf_stb,     // one 128-bit fbl entry valid this cycle
-    output logic [5:0]   rf_idx,     // which entry (0..LBEATS/2-1)
+    output logic [5:0]   rf_idx,     // which entry (0..LBEATS/2-1, or LBEATS_W/2-1)
     output logic [127:0] rf_data,
     output logic         rf_done,
 
@@ -134,9 +142,15 @@ module s32_fbddr #(
 
     logic        sh_pend;
     logic [15:0] sh_a;
-    logic [1:0]  sh_lane;
+    logic [3:0]  sh_mask;                     // lanes of sh_a to clear
     logic [63:0] sh_word;
     logic        sh_word_v;
+
+    typedef enum logic [2:0] {
+        D_IDLE, D_RD, D_RDW, D_WR, D_SHRD, D_SHW, D_SHM, D_SHWR
+    } dst_e;
+    dst_e dst;
+    assign quiet = (dst == D_IDLE);
 
     // ------------------------------------------------- accept-side decode
     // Pure combinational classification of this cycle's write; the always_ff
@@ -147,6 +161,14 @@ module s32_fbddr #(
     wire w_sh_raw   = fb_we && cen_ok &&  fb_shadow;
 
     wire same_beat  = acc_v && (w_a == acc_a);
+    // a shadow write to the beat of a pending RMW merges into it until the
+    // mask is applied: D_SHW captures the raw word, D_SHM applies sh_mask one
+    // clk later, so a merge accepted on the capture cycle still counts. Only
+    // registered state decides (no path from the DDR handshake into fbw_ok
+    // and the engine's clock enable). Nothing else can be written meanwhile:
+    // sh_pend blocks pixel writes.
+    wire sh_merge   = w_sh_raw && sh_pend && (w_a == sh_a)
+                      && (dst != D_SHM) && (dst != D_SHWR);
     wire contig     = acc_v && (w_a == acc_a + 16'd1);
     wire moving     = w_px_raw && acc_v && !same_beat;
 
@@ -162,7 +184,8 @@ module s32_fbddr #(
 
     // The engine stalls ONLY when a seal is required and the other buffer is
     // not free, or while a shadow barrier resolves, or before DDR is available.
-    assign fbw_ok = go && !rst && !sh_pend && !(need_seal && !other_free)
+    assign fbw_ok = go && !rst && (!sh_pend || sh_merge)
+                       && !(need_seal && !other_free)
                        && !(w_sh_raw && 1'b0);   // shadows are accepted, then
                                                  // block via sh_pend next cycle
 
@@ -210,13 +233,12 @@ module s32_fbddr #(
         end
 
     // ----------------------------------------------------------- main FSM
-    typedef enum logic [2:0] {
-        D_IDLE, D_RD, D_RDW, D_WR, D_SHRD, D_SHW, D_SHWR
-    } dst_e;
-    dst_e dst;
-    assign quiet = (dst == D_IDLE);
+    // (the state, dst, is declared above the accept-side decode)
 
-    logic [6:0] rbeat;                        // 0..LBEATS-1
+    logic [6:0] rbeat;                        // 0..LBEATS-1 (LBEATS_W-1)
+    logic       rd_wide;                      // the line read's width, latched
+                                              // when it is issued
+    wire  [6:0] rd_last = rd_wide ? 7'(LBEATS_W - 1) : 7'(LBEATS - 1);
     logic [6:0] widx;                         // beat index within a burst
     logic [63:0] rd_lo, rd_hi;
 
@@ -245,7 +267,7 @@ module s32_fbddr #(
             D_RD: begin
                 ddr_rd       = 1'b1;
                 ddr_addr     = FB_BASE + {13'd0, rf_bank, rf_line, 7'd0};
-                ddr_burstcnt = 8'(LBEATS);
+                ddr_burstcnt = 8'(rd_last) + 8'd1;
             end
             D_WR: begin
                 ddr_we       = 1'b1;
@@ -264,7 +286,8 @@ module s32_fbddr #(
                 ddr_addr     = FB_BASE + {13'd0, sh_a};
                 ddr_burstcnt = 8'd1;
                 ddr_din      = sh_word;
-                ddr_be       = 8'h03 << (2 * sh_lane);
+                ddr_be       = {{2{sh_mask[3]}}, {2{sh_mask[2]}},
+                                {2{sh_mask[1]}}, {2{sh_mask[0]}}};
             end
             default: ;
         endcase
@@ -303,12 +326,15 @@ module s32_fbddr #(
             if (!rf_req) rf_seen <= 1'b0;
 
             // =================================================== accept
-            if (do_accept && fb_shadow) begin
+            if (do_accept && fb_shadow && sh_pend) begin
+                // merge into the pending RMW (sh_merge: same beat, not read)
+                sh_mask[w_lane] <= 1'b1;
+            end else if (do_accept && fb_shadow) begin
                 // Barrier. Retire whatever is gathering so the RMW cannot pass
                 // an older write to the same word, then block until it lands.
                 sh_pend <= 1'b1;
                 sh_a    <= w_a;
-                sh_lane <= w_lane;
+                sh_mask <= 4'b0001 << w_lane;
                 if (acc_v) begin
                     run_n[fill] <= run_n[fill] + 8'd1;   // data: push_now above
                     acc_v       <= 1'b0;
@@ -348,8 +374,9 @@ module s32_fbddr #(
             unique case (dst)
                 D_IDLE: begin
                     if (go && rf_go && !scan_conflict) begin
-                        rbeat <= 7'd0;
-                        dst   <= D_RD;
+                        rbeat   <= 7'd0;
+                        rd_wide <= rf_wide;
+                        dst     <= D_RD;
                     end
                     else if (go && sh_pend && all_quiet && !have_run) begin
                         sh_word_v <= 1'b0;
@@ -391,7 +418,7 @@ module s32_fbddr #(
                             rf_stb <= 1'b1;
                             rf_idx <= rbeat[6:1];
                         end
-                        if (rbeat == 7'(LBEATS - 1)) begin
+                        if (rbeat == rd_last) begin
                             rf_done <= 1'b1;
                             rf_seen <= 1'b1;
                             dst     <= D_IDLE;
@@ -414,10 +441,16 @@ module s32_fbddr #(
 
                 D_SHW:
                     if (ddr_dout_ready) begin
-                        sh_word   <= ddr_dout & ~(64'h8000 << (16 * sh_lane));
+                        sh_word   <= ddr_dout;           // raw; D_SHM masks it
                         sh_word_v <= 1'b1;
-                        dst       <= D_SHWR;
+                        dst       <= D_SHM;
                     end
+
+                D_SHM: begin
+                    sh_word <= sh_word & ~{sh_mask[3], 15'd0, sh_mask[2], 15'd0,
+                                           sh_mask[1], 15'd0, sh_mask[0], 15'd0};
+                    dst     <= D_SHWR;
+                end
 
                 D_SHWR:
                     if (!ddr_busy) begin

@@ -95,7 +95,7 @@ localparam CONF_STR = {
 	"O[10],Service,Off,On;",
 	"-;",
 	"T[0],Reset;",
-	"J1,Attack,Jump,Magic,Start,Coin,Service,Test;",
+	"J1,Attack,Jump,Magic,Start,Coin,Service,Test,Button 4,Button 5,Button 6;",
 	"jn,A,B,X,Start,R,L,Select;",
 	"v,0;",
 	"V,v",`BUILD_DATE
@@ -379,7 +379,12 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          Fight's. The table is masked into the V25 part on the protection
 //          module, so it is board build, not wiring, but it is just as fixed
 //          per game (MAME sega_system32_ga2 vs sega_system32_arf).
-//   bits 3-7  reserved, must be 0
+//   bit 3  two-player six-button harness (Burning Rival): buttons 4-6 of
+//          players 1 and 2 arrive on the 4-player I/O board's EXTRA2 port
+//          and EXTRA1/EXTRA3 are unused (MAME INPUT_PORTS_START(brival)).
+//   bit 4  FD1149 protection module 317-0212 (Burning Rival): s32_v60bus's
+//          flag-word rule (MAME init_brival). Board build, like bit 2.
+//   bits 5-7  reserved, must be 0
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -399,14 +404,22 @@ always @(posedge clk_sys)
 // EXTRA3: bit0 START3, bit1 START4   (ga2u: bit2/3 = COIN2/COIN1)
 // MiSTer joystick: [0]R [1]L [2]D [3]U, J1 buttons from [4]:
 // [4]Attack [5]Jump [6]Magic [7]Start [8]Coin [9]Service [10]Test
+// [11]Button 4 [12]Button 5 [13]Button 6 (Burning Rival's kicks; appended
+// after Test so every earlier .mra keeps its bit positions)
 function [7:0] pad (input [31:0] j);
 	pad = ~{j[1], j[0], j[3], j[2], 1'b0, j[6], j[5], j[4]};
 endfunction
 
 wire [7:0] in_p1 = pad(joystick_0);
 wire [7:0] in_p2 = pad(joystick_1);
-wire [7:0] in_extra1 = pad(joystick_2);
-wire [7:0] in_extra2 = pad(joystick_3);
+// Six-button harness (board_cfg[3], Burning Rival): EXTRA2 carries buttons
+// 4-6 of players 1 and 2 in MAME INPUT_PORTS_START(brival)'s bit order,
+// bits 3 and 6 unknown (read high); EXTRA1 and EXTRA3 are unused.
+wire six_btn = board_cfg[3];
+wire [7:0] in_extra2_6b = ~{joystick_0[13], 1'b0, joystick_0[11],
+	joystick_0[12], 1'b0, joystick_1[13], joystick_1[12], joystick_1[11]};
+wire [7:0] in_extra1 = six_btn ? 8'hFF : pad(joystick_2);
+wire [7:0] in_extra2 = six_btn ? in_extra2_6b : pad(joystick_3);
 // Coin wiring, selected by board_cfg[0] (above). The World/Japan programs
 // read COIN1/COIN2 on the JAMMA edge through the 315-5296 (SERVICE12 bits
 // 2/3). The US programs are built for the dedicated 4-player cabinet, whose
@@ -415,7 +428,7 @@ wire [7:0] in_extra2 = pad(joystick_3);
 // INPUT_PORTS_START(ga2u)). With the wrong wiring, coins register for the
 // wrong player and START1 does nothing.
 wire us_cab = board_cfg[0];
-wire [7:0] in_extra3 = {4'b1111,
+wire [7:0] in_extra3 = six_btn ? 8'hFF : {4'b1111,
 	~(us_cab & joystick_0[8]),                    // bit3 COIN1 (US cabinet)
 	~(us_cab & joystick_1[8]),                    // bit2 COIN2 (US cabinet)
 	~joystick_3[7], ~joystick_2[7]};              // bit1 START4, bit0 START3
@@ -461,6 +474,7 @@ wire [2:0] in_service34 = {1'b1,
 //////////////////////   THE MACHINE   ///////////////////////////
 
 wire        de, hblank, vblank, hs, vs, ce_pix;
+wire        vid_wide;                         // 416-pixel frame (Burning Rival)
 wire [14:0] rgb;
 wire signed [15:0] audio_l, audio_r;
 
@@ -474,7 +488,7 @@ s32_board board
 	.ld_rdy(ld_rdy),
 
 	.de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
-	.hs(hs), .vs(vs), .ce_pix(ce_pix),
+	.hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
 	.audio_l(audio_l), .audio_r(audio_r),
 
 	.in_p1(in_p1), .in_p2(in_p2), .in_portc(8'hFF),
@@ -484,6 +498,7 @@ s32_board board
 	.in_extra3(in_extra3),
 	.cab_vmirror(board_cfg[1]),
 	.prot_arf(board_cfg[2]),
+	.prot_brival(board_cfg[4]),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),
@@ -532,13 +547,16 @@ assign av_b = {rgb[14:10], rgb[14:12]};
 // the scaler's DE follow it; with it Off (`crt_act` = 0) every pin below is
 // the native stream exactly as before the stage existed. The engine's own
 // bypass is never used for that, because it would add two pixels of latency.
+// The stage is built for the 320-mode raster (400 dots, the 6.25 MHz rate
+// table); a 416-pixel frame (vid_wide, Burning Rival) is passed through
+// native, with the setting kept for the next 320-mode frame.
 wire       crt_act, crt_hs, crt_vs, crt_de, crt_ce;
 wire [7:0] crt_r, crt_g, crt_b;
 
 s32_crt_adjust crt_adjust
 (
 	.clk(clk_sys), .ce_pix(ce_pix),
-	.osd_on(crt_enable),
+	.osd_on(crt_enable & ~vid_wide),
 	.osd_hsize(status[40:36]), .osd_hpos(status[47:41]), .osd_vshift(status[53:48]),
 	.r_in(av_r), .g_in(av_g), .b_in(av_b),
 	.hs_in(hs), .vs_in(vs), .de_in(de), .vblank_in(vblank),

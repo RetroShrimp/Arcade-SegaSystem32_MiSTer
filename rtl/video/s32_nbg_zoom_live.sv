@@ -22,6 +22,10 @@ module s32_nbg_zoom_live (
     input  logic        clk,
     input  logic        rst,
     input  logic        cen_pix,      // one pulse per displayed dot (6.25 MHz)
+    // 416-pixel mode (s32_video, stable for the frame): the line is 416
+    // dots, and the X flip starts from column 415 (MAME update_tilemap_zoom
+    // srcx_start += visarea.right() * srcxstep). Latched at init.
+    input  logic        wide,
 
     // per-frame zoom setup
     input  logic        init,          // compute DDA parameters (per frame)
@@ -78,7 +82,7 @@ module s32_nbg_zoom_live (
     // column's tile ROM row into the pattern buffer ahead of the beam. The
     // cursor has its own nrow read (snq), so the ROM address math stays in
     // this core. Columns are presented only once this line's walk is done,
-    // and the sequence is the beam's own (same srcx0/sxstep_eff, 319
+    // and the sequence is the beam's own (same srcx0/sxstep_eff, 319 or 415
     // steps), so exactly the columns the beam will use are fetched.
     output logic        pf_vld,       // pf_col/pf_addr present a column
     output logic [5:0]  pf_col,       // canvas column presented
@@ -100,6 +104,8 @@ module s32_nbg_zoom_live (
     logic [6:0]  pg [0:3];
     logic [1:0]  bank_q;
     logic        flip_q;
+    logic        wide_q;               // this frame's width (latched at init)
+    wire  [8:0]  pixlast = wide_q ? 9'd415 : 9'd319;
     logic        yflip_q;              // flipy ^ vmirror: Y DDA direction
     logic [31:0] sxstep, systep;       // unsigned step magnitudes (12.20)
     logic [31:0] srcx0;                // per-line X start
@@ -142,7 +148,7 @@ module s32_nbg_zoom_live (
     // ---- beam pixel path: srcx accumulates per dot, vy is the line DDA.
     logic [31:0] srcx;                 // canvas x accumulator (12.20)
     logic [8:0]  vy;                   // canvas y for this line
-    logic [8:0]  pixctr;               // 0..319 (visible range + pix_valid)
+    logic [8:0]  pixctr;               // 0..pixlast (visible range + pix_valid)
     logic [9:0]  vx;
     assign vx = srcx[29:20];
 
@@ -201,7 +207,7 @@ module s32_nbg_zoom_live (
     // included. snq is the nrow copy's read for that column; pf_addr is
     // rom_addr's math on snq. Columns are presented once the walk is done.
     logic [31:0] pf_srcx;
-    logic [8:0]  pf_dot;               // beam steps replayed (0..319)
+    logic [8:0]  pf_dot;               // beam steps replayed (0..pixlast)
     logic        pf_run, pf_adv, pf_done_r, pf_ok_q;
     logic [5:0]  pf_from;
     wire  [5:0]  pf_ccol = pf_srcx[29:24];   // canvas column of the replica
@@ -218,7 +224,7 @@ module s32_nbg_zoom_live (
             pf_done_r <= !walk_en;
         end else if (pf_run && pf_adv) begin
             if (pf_ccol != pf_from) pf_adv <= 1'b0;          // landed
-            else if (pf_dot == 9'd319) begin                 // sequence done
+            else if (pf_dot == pixlast) begin                // sequence done
                 pf_adv <= 1'b0; pf_done_r <= 1'b1;
             end else begin
                 pf_srcx <= pf_srcx + sxstep_eff;
@@ -305,6 +311,7 @@ module s32_nbg_zoom_live (
             pg[2] <= page_c; pg[3] <= page_d;
             bank_q <= bank;
             flip_q <= flip;
+            wide_q <= wide;
             yflip_q <= flipy ^ vmirror;
             ready  <= 1'b0;
             dden <= (dstxstep < 12'h80) ? 12'h80 : dstxstep;
@@ -344,7 +351,7 @@ module s32_nbg_zoom_live (
                     // X and Y start independently: yflip_q also carries
                     // the cabinet mirror
                     srcx0    <= scroll_x0 - cx_prod[31:0]
-                              + (flip_q ? 32'd319 * sxstep : 32'd0);
+                              + (flip_q ? {23'd0, pixlast} * sxstep : 32'd0);
                     srcy_acc <= scroll_y0 - cy_prod[31:0]
                               + (yflip_q ? 32'd223 * systep : 32'd0);
                 end
@@ -365,7 +372,7 @@ module s32_nbg_zoom_live (
                         pixctr   <= 9'd0;
                         state    <= Z_RUN;
                     end else if (state == Z_RUN) begin
-                        if (cen_pix && pixctr != 9'd319) begin
+                        if (cen_pix && pixctr != pixlast) begin
                             srcx   <= srcx + sxstep_eff;
                             pixctr <= pixctr + 9'd1;
                         end

@@ -21,12 +21,15 @@
 // line window reaches) to 0.
 
 module s32_clip (
-    input  logic [8:0]  x,            // screen x 0..319
+    input  logic [8:0]  x,            // screen x 0..sw-1
     input  logic [7:0]  y,            // screen line 0..223
     input  logic        clipen,       // $31FF02 bit 11+n
     input  logic        clipout,      // $31FF02 bit 6+n (1 = outside)
     input  logic [3:0]  winmask,      // $31FF06 nibble for this layer
     input  logic        gflip,        // $31FF00 bit 9 only
+    // visible width, 320 or 416: the flip mirrors the windows over it
+    // (MAME: visarea.right() + 1)
+    input  logic [9:0]  sw,
     // raw window registers ($31FF60 + 8*w ..)
     input  logic [15:0] win_l [0:3],
     input  logic [15:0] win_t [0:3],
@@ -37,7 +40,6 @@ module s32_clip (
     output logic        draw
 );
 
-    localparam logic [9:0] SW = 10'd320;
     localparam logic [8:0] SH = 9'd224;
 
     logic in_win;
@@ -53,8 +55,8 @@ module s32_clip (
             if (gflip) begin
                 logic [9:0] l2;
                 logic [8:0] t2;
-                l2 = (SW >= r) ? SW - r : 10'd0;
-                r  = (SW >= l) ? SW - l : 10'd0;
+                l2 = (sw >= r) ? sw - r : 10'd0;
+                r  = (sw >= l) ? sw - l : 10'd0;
                 l  = l2;
                 t2 = (SH >= b) ? SH - b : 9'd0;
                 b  = (SH >= t) ? SH - t : 9'd0;

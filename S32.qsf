@@ -66,7 +66,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
 # The release bitstream was fitted with seed 1. The worst path on this design
 # is in the framework's HDMI scaler (ascal), not the core; if a source change
 # leaves that clock slightly negative, try another seed.
-set_global_assignment -name SEED 7
+set_global_assignment -name SEED 11
 
 # This tree is the release configuration of the core: the sources carry no
 # configuration switches, so no core VERILOG_MACRO is needed here. The lines

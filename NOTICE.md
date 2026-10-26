@@ -31,7 +31,8 @@ its ROM address-line scramble (`rtl/sys32/s32_v25.sv`, from
 
 This repository contains no ROM data, no artwork, no manuals and no schematic
 scans. *Golden Axe*, *Holosseum*, *Super Visual Football*, *Super Visual
-Soccer*, *Arabian Fight* and *System 32* are trademarks of SEGA;
+Soccer*, *Arabian Fight*, *Burning Rival* and *System 32* are trademarks of
+SEGA;
 *Spider-Man* is a trademark of Marvel. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled
 to.

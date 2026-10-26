@@ -29,6 +29,9 @@
 //   D80000-DFFFFF  random number generator: free-running 16-bit LFSR,
 //                  a write seeds it (the real generator is not documented)
 //   E00000-E0000F  315-5385 memory timing registers
+//
+// Burning Rival's FD1149 protection module (prot_brival): see the
+// "FD1149 flag words" block below.
 
 module s32_v60bus (
     input  logic        clk,
@@ -123,7 +126,11 @@ module s32_v60bus (
     output logic        ic_we,
     output logic [3:0]  ic_addr,
     output logic [7:0]  ic_wdata,
-    input  logic [7:0]  ic_rdata
+    input  logic [7:0]  ic_rdata,
+
+    // ---- Burning Rival's FD1149 protection module (from the .mra's board
+    //      descriptor bit 4); 0 on every other game
+    input  logic        prot_brival
 );
 
     // ------------------------------------------------------ work RAM
@@ -282,6 +289,45 @@ module s32_v60bus (
                                      // keeps it off a deep timing path
 
     assign bus_hold = (ast != A_IDLE);
+
+    // --------------------------------------- FD1149 flag words (brival)
+    // Burning Rival carries an FD1149 security module (317-0212) on the ROM
+    // board's protection socket. Its program has never been dumped, and no
+    // technical description of it is published (docs/brival-bringup.md §2).
+    // What the game asks of it is visible in the V60 program: it writes
+    // $FFFF to a flag halfword at $20BA00 (boot), $20BA04 (in play) or
+    // $20BA06, runs a 32K- or 64K-iteration delay loop, then requires the
+    // halfword to read 0, or takes its failure path. The module has bus
+    // access, so it presumably clears the word itself. MAME models the
+    // result: a 16-bit read of $20BA00, $20BA04 or $20BA06 returns 0, every
+    // other read returns work RAM (segas32_m.cpp brival_protection_r; the
+    // handler covers exactly $20BA00-$20BA07, no mirror). The core does the
+    // same. MAME's V60 runs a 16-bit bus, so the rule applies per halfword:
+    // a halfword is forced to 0 only when the access covers both of its
+    // bytes (an aligned halfword, or a halfword inside a dword). Byte reads,
+    // and halfword reads at an odd address (split into byte cycles), see
+    // work RAM.
+    //   MAME's other half, brival_protection_w (a write at $A00800-$A0080A
+    // copies a 16-byte ROM string into protection RAM), has no V60-visible
+    // effect: nothing maps that RAM for reading, and the game's read-back
+    // check of it at $A00000/$A00100 is dead code (its enable, $2070EB, is
+    // only ever cleared). Writes to $A00xxx land in the mailbox RAM, as on
+    // Spider-Man's board, where nothing reads them.
+    function automatic logic brival_flag (input logic [23:0] a);
+        brival_flag = (a == 24'h20BA00) || (a == 24'h20BA04)
+                   || (a == 24'h20BA06);
+    endfunction
+    logic [31:0] brival_clr;        // byte lanes of the read to force to 0
+    always_comb begin
+        brival_clr = 32'd0;
+        for (int k = 0; k < 3; k = k + 1) begin
+            logic [23:0] h;
+            h = q_addr + k[23:0];
+            if (prot_brival && !h[0] && (k + 2 <= int'(q_size))
+                && brival_flag(h))
+                brival_clr[8*k +: 16] = 16'hFFFF;
+        end
+    end
 
     // wram unaligned assembly (q_addr-based, captured in A_WRAM2)
     logic [63:0] wram_pair;
@@ -554,7 +600,7 @@ module s32_v60bus (
                 A_WRAM1:  ast <= A_WRAM1B;  // BRAM stage-1 read lands
                 A_WRAM1B: ast <= A_WRAM2;   // OREGA/OREGB output register
                 A_WRAM2: begin
-                    mem_rdata <= wram_bytes;
+                    mem_rdata <= wram_bytes & ~brival_clr;
                     ast <= A_IDLE;
                 end
 

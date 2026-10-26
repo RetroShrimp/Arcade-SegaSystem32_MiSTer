@@ -389,10 +389,19 @@ module s32_mixer (
     // shadow applies when the scan reaches the sprite slot before the
     // winner, and also when the blend scan passes the sprite slot on its
     // way to the second layer (MAME checks the sprite case on the second
-    // scan too; not confirmed on hardware). A transparent sprite pixel is
-    // not in the scan at all, so it casts no shadow.
+    // scan too; not confirmed on hardware). The bit-15 rule holds for a
+    // TRANSPARENT sprite pixel as well: MAME's mix loop sets
+    // `shadow = ~sprpix & sprshadowmask` when the scan reaches the sprite
+    // slot, before its transparency test (segas32_v.cpp mix_all_layers,
+    // 0.288 and master alike). That is how a shadow sprite works: it only
+    // clears bit 15 of the frame-buffer word (`dest &= 0x7fff`), leaving
+    // 0x7FFF over empty frame buffer, and the layers under it come out
+    // halved. Burning Rival's fighters' floor shadows are drawn this way
+    // ($4C = FF45). A 2026-07-16 change had excluded transparent pixels to
+    // satisfy s32_mixer_blend case F, whose "no shadow" reference used
+    // 0x7FFF under a $4C with bit 2 set; that reference is now 0xFFFF.
     logic spr_shadow_px;
-    assign spr_shadow_px = spr_shadowpat || (!spr_trans && spr_bit15sh);
+    assign spr_shadow_px = spr_shadowpat || spr_bit15sh;
     logic shadow0;
     assign shadow0 = (({1'b0, spr_k} <= firstv)
                       || (blend_gate && {1'b0, spr_k} <= secondv))

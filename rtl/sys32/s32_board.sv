@@ -51,6 +51,7 @@ module s32_board (
     output logic        hs,
     output logic        vs,
     output logic        ce_pix,
+    output logic        vid_wide,     // 416-pixel frame (s32_video `wide`)
     output logic        hblank,
     output logic        vblank,
 
@@ -74,6 +75,9 @@ module s32_board (
     // protection V25 opcode table (S32.sv board descriptor bit 2) — see
     // s32_v25's dec_arf
     input  logic        prot_arf,
+    // Burning Rival's FD1149 model (S32.sv board descriptor bit 4) — see
+    // s32_v60bus
+    input  logic        prot_brival,
 
     // ---- EEPROM image
     output logic [15:0] ee_dump_data,
@@ -158,8 +162,9 @@ module s32_board (
         .fbr_re(fbr_re), .fbr_x(fbr_x), .fbr_line(fbr_line),
         .fbr_data(fbr_data), .fb_top_line(fb_top_line),
         .cab_vmirror(cab_vmirror), .prot_arf(prot_arf),
+        .prot_brival(prot_brival),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
-        .hs(hs), .vs(vs), .ce_pix(ce_pix),
+        .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
         .audio_l(audio_l), .audio_r(audio_r),
         .in_p1(in_p1), .in_p2(in_p2), .in_portc(in_portc),
         .in_service12(in_service12), .in_sw1_dips(in_sw1_dips),
@@ -421,6 +426,8 @@ module s32_board (
     typedef enum logic [0:0] { PF_IDLE, PF_RUN } pf_e;
     pf_e   pf;
     logic [5:0] pf_burst;             // 40 bursts x 8 words = 320 px
+    // 52 bursts (416 px) in the wide mode; vid_wide changes only in vblank
+    wire  [5:0] pf_last = vid_wide ? 6'd51 : 6'd39;
     logic       pf_bsel;              // bank being filled
     logic [7:0] pf_line_t;            // fill target line (latched)
     logic       pf_dbank_t;           // fill target display bank (latched)
@@ -532,20 +539,36 @@ module s32_board (
     // bottom-up (sprite output V-flip XOR the cabinet mirror; Holosseum sets
     // the V-flip). 1024 x 16 bits = 2 M10K, addressed {bank, x}. If
     // fb_top_line changes, one frame is served from the old line's copy.
+    //
+    // A shadow write (fb_shadow) carries no data: it clears bit 15 of the
+    // stored word (MAME render_one_sprite `dest &= 0x7fff`; s32_fbddr does it
+    // by read-modify-write). The copy keeps that as a 1-bit flag beside the
+    // word, set by a shadow write and cleared by a pixel write, and applied
+    // on the read. (It used to store the shadow write's don't-care data:
+    // Burning Rival's floor shadows on line 0 then showed sprite colours,
+    // board bench FBSTALE line0 = 948 at frame 729.)
     (* ramstyle = "M10K" *) logic [15:0] l0buf [0:1023];
+    (* ramstyle = "M10K" *) logic        l0sh  [0:1023];
     always_ff @(posedge clk)
-        if (fb_we && fb_y == fb_top_line) l0buf[{fb_bank, fb_x}] <= fb_wdata;
+        if (fb_we && !fb_shadow && fb_y == fb_top_line)
+            l0buf[{fb_bank, fb_x}] <= fb_wdata;
+    always_ff @(posedge clk)
+        if (fb_we && fb_y == fb_top_line) l0sh[{fb_bank, fb_x}] <= fb_shadow;
 
     // Registered on fbr_re alone, not on a cache hit: this path cannot miss.
     // l0_sel_q rides the same stage so the select stays aligned with the data.
     logic [15:0] l0q;
+    logic        l0shq;
     logic        l0_sel_q;
     always_ff @(posedge clk)
         if (fbr_re) begin
             l0q      <= l0buf[{fb_disp_bank, fbr_x}];
             l0_sel_q <= (fbr_line == fb_top_line);
         end
-    assign fbr_data = l0_sel_q ? l0q : fbl_q[16 * fbr_xl_q +: 16];
+    always_ff @(posedge clk)
+        if (fbr_re) l0shq <= l0sh[{fb_disp_bank, fbr_x}];
+    wire [15:0] l0_word = {l0q[15] & ~l0shq, l0q[14:0]};
+    assign fbr_data = l0_sel_q ? l0_word : fbl_q[16 * fbr_xl_q +: 16];
 
     // ============================== frame buffer write path in SDRAM
     // Used only when the frame buffer is kept in SDRAM; with the DDR3 frame
@@ -806,6 +829,7 @@ module s32_board (
         .fb_x(fb_x), .fb_y(fb_y), .fb_wdata(fb_wdata),
         .fb_shadow(fb_shadow), .fbw_ok(fbddr_wok),
         .rf_req(fbddr_req), .rf_line(fbddr_line), .rf_bank(fbddr_bank),
+        .rf_wide(vid_wide),
         .rf_stb(fbddr_stb), .rf_idx(fbddr_idx), .rf_data(fbddr_data),
         .rf_done(fbddr_done),
         .ddr_busy(ddr_busy), .ddr_rd(ddr_rd), .ddr_we(ddr_we),

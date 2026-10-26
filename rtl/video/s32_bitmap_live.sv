@@ -10,7 +10,8 @@
 //    grants it: vr_ok) into the private `row` buffer, one word per granted
 //    clk. The address holds while the walk is paused, so a repeated store
 //    is harmless. Span = 161 words (8bpp) / 81 (4bpp): the 320 visible
-//    dots plus one word for an unaligned scroll, stored at their absolute
+//    dots (209 / 105 for 416) plus one word for an unaligned scroll, stored
+//    at their absolute
 //    row positions so the beam needs no wrap arithmetic.
 //  - line_start (start of the beam stream): reset the beam column; each
 //    cen_pix advances one dot. The pen is combinational off the registered
@@ -29,6 +30,7 @@ module s32_bitmap_live (
     input  logic        clk,
     input  logic        rst,
     input  logic        cen_pix,      // one pulse per displayed dot (6.25 MHz)
+    input  logic        wide,         // 416-pixel mode (s32_video): 416 dots
     input  logic        line_start,   // beam stream start (HBLANK, BF_FSTART)
     input  logic [7:0]  line,         // upcoming visible line (sampled at row_start)
 
@@ -66,9 +68,9 @@ module s32_bitmap_live (
     assign cbase = 14'({r8c[8:0], 4'd0}) & (bpp8 ? 14'h3F00 : 14'h3FF0);
 
     // ------------------------------------------------ row-transfer walk
-    // touched span: first word = xscroll>>k, count = 320>>k + 1 (the +1
-    // covers a non-aligned scroll where dot 319's word wraps into one
-    // more entry). Words wrap modulo the row width (256 / 128).
+    // touched span: first word = xscroll>>k, count = W>>k + 1, W the visible
+    // width (the +1 covers a non-aligned scroll where the last dot's word
+    // wraps into one more entry). Words wrap modulo the row width (256 / 128).
     logic [8:0] srcy;
     // two banks: the walk fills walk_bank (the next line) while the beam
     // reads show_bank (the current line)
@@ -83,6 +85,7 @@ module s32_bitmap_live (
     (* ramstyle = "MLAB" *) logic [15:0] row [0:511];
 
     localparam int W8 = 161, W4 = 81;         // real touched words (worst case);
+    localparam int W8_416 = 209, W4_416 = 105; // the same for 416 dots
                                               // the walk takes count granted
                                               // cycles (the final word stores
                                               // via the st pipe one clk on)
@@ -95,7 +98,9 @@ module s32_bitmap_live (
                                                // every mid-walk pause)
     logic [7:0] st_abs;                        // its absolute store target
     logic       walking;
-    wire  [8:0] wcount = bpp8 ? 9'(W8) : 9'(W4);
+    logic       wide_q;                        // this walk's width
+    wire  [8:0] wcount = bpp8 ? (wide_q ? 9'(W8_416) : 9'(W8))
+                              : (wide_q ? 9'(W4_416) : 9'(W4));
     // presented step clamps at the last real word so a stall at the tail
     // re-presents the final entry
     wire  [8:0] wstep  = (widx < wcount - 9'd1) ? widx : (wcount - 9'd1);
@@ -116,6 +121,7 @@ module s32_bitmap_live (
                 srcy    <= bpp8 ? {1'b0, 8'(line + yscroll[7:0])}
                                 : 9'({1'b0, line} + yscroll);
                 wstart  <= bpp8 ? xscroll[8:1] : {1'b0, xscroll[8:2]};
+                wide_q  <= wide;
                 widx    <= 9'd0;
                 walking <= 1'b1;
             end else if (walking && vr_ok) begin
@@ -134,7 +140,8 @@ module s32_bitmap_live (
     // ------------------------------------------------------- beam stream
     // srcy latched at row_start; pixctr is the beam column, advanced one
     // dot per cen_pix from line_start. Reads only the private row.
-    logic [8:0] pixctr;               // 0..319
+    logic [8:0] pixctr;               // 0..319 (415 when wide)
+    wire  [8:0] pixlast = wide ? 9'd415 : 9'd319;
     logic [8:0] effx; assign effx = pixctr + xscroll;   // 9-bit, wraps at 512
 
     // registered row read (1-clk latency)
@@ -175,7 +182,7 @@ module s32_bitmap_live (
         end else begin
             effx_q  <= effx;      // track the fetched word's effx (1-clk)
             started <= 1'b1;
-            if (cen_pix && pixctr != 9'd319) pixctr <= pixctr + 9'd1;
+            if (cen_pix && pixctr != pixlast) pixctr <= pixctr + 9'd1;
         end
     end
 

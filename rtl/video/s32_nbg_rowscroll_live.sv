@@ -44,6 +44,10 @@ module s32_nbg_rowscroll_live (
     input  logic        clk,
     input  logic        rst,
     input  logic        cen_pix,      // one pulse per displayed dot (6.25 MHz)
+    // 416-pixel mode (s32_video, stable for the frame): 416 dots a line, and
+    // the X flip starts at column 415 (MAME draw_bg_layer: srcx =
+    // cliprect.right() + xscroll when flipped). Latched at row_start.
+    input  logic        wide,
     input  logic        line_start,   // beam stream start (HBLANK, BF_FSTART)
     input  logic [7:0]  line,         // upcoming visible line (sampled at row_start)
 
@@ -86,7 +90,7 @@ module s32_nbg_rowscroll_live (
 
     // pattern prefetch cursor (see s32_nbg_zoom_live): replays
     // this line's canvas-column sequence in beam order (integer ±1 walk
-    // off srcx0, 319 steps) for the pattern streamer. snq is a second
+    // off srcx0, 319 or 415 steps) for the pattern streamer. snq is a second
     // nrow read; pf_addr mirrors rom_addr's math off snq. Presentation
     // gates on the walk being finished — srcx0/srcy land mid-walk (W_SET),
     // so the cursor loads its position when the walk returns to W_IDLE.
@@ -114,6 +118,8 @@ module s32_nbg_rowscroll_live (
     // ---- config decode
     logic [6:0]  pg [0:3];
     logic [7:0]  ylookup;
+    logic        wide_q;               // the walked line's width
+    wire  [8:0]  pixlast = wide_q ? 9'd415 : 9'd319;
     logic [9:0]  srcx0;                // per-line canvas x start
     logic [8:0]  srcy;                 // per-line canvas y
     logic [9:0]  h_saved;
@@ -196,6 +202,7 @@ module s32_nbg_rowscroll_live (
                 pg[0] <= page_a; pg[1] <= page_b;
                 pg[2] <= page_c; pg[3] <= page_d;
                 ylookup <= flipy ? (8'd223 - line) : line;
+                wide_q  <= wide;
                 // window mode indexes the table by the GLOBAL flip only
                 // (MAME `line = flip ? visarea.max_y - y : y`)
                 tlookup <= (win_en ? gflip : flipy) ? (8'd223 - line) : line;
@@ -226,7 +233,7 @@ module s32_nbg_rowscroll_live (
                         // (with or without rowselect), so it is the rowscroll
                         // term in both table configurations.
                         srcx0 <= xscroll_base
-                               + (flip ? 10'd319 : 10'd0)
+                               + (flip ? {1'b0, pixlast} : 10'd0)
                                + (rowscroll_en ? h_saved : 10'd0);
                         if (!rowselect_en)
                             srcy <= yscroll + {1'b0, ylookup};
@@ -240,7 +247,7 @@ module s32_nbg_rowscroll_live (
                         // the walk is filling (walk_bank stable = line[0]), so
                         // the beam reads it via show_bank alongside nrow.
                         srcx0_bk[walk_bank] <= xscroll_base
-                               + (flip ? 10'd319 : 10'd0)
+                               + (flip ? {1'b0, pixlast} : 10'd0)
                                + (rowscroll_en ? h_saved : 10'd0);
                         srcy_bk[walk_bank] <= (!rowselect_en)
                                ? (yscroll + {1'b0, ylookup})
@@ -265,7 +272,7 @@ module s32_nbg_rowscroll_live (
     end
 
     // ---- beam position and canvas x (combinational, no accumulator)
-    logic [8:0] pixctr;               // 0..319
+    logic [8:0] pixctr;               // 0..pixlast
     logic       running;
     logic [9:0] srcx;                 // canvas x for this dot, wraps at 1024
     // the beam reads its per-line values from a bank keyed like nrow, so
@@ -287,7 +294,7 @@ module s32_nbg_rowscroll_live (
     // column once in beam order. Loaded when the walk returns to W_IDLE
     // (srcx0/srcy are walk products); pf_pend carries the arm across.
     logic [9:0] pf_x;
-    logic [8:0] pf_dot;                // beam steps replayed (0..319)
+    logic [8:0] pf_dot;                // beam steps replayed (0..pixlast)
     logic       pf_run, pf_adv, pf_done_r, pf_ok_q, pf_pend;
     logic [5:0] pf_from;
     wire  [5:0] pf_ccol = pf_x[9:4];   // canvas column of the replica
@@ -309,7 +316,7 @@ module s32_nbg_rowscroll_live (
             pf_run  <= 1'b1;
         end else if (pf_run && pf_adv) begin
             if (pf_ccol != pf_from) pf_adv <= 1'b0;          // landed
-            else if (pf_dot == 9'd319) begin                 // sequence done
+            else if (pf_dot == pixlast) begin                // sequence done
                 pf_adv <= 1'b0; pf_done_r <= 1'b1;
             end else begin
                 pf_x   <= flip ? (pf_x - 10'd1) : (pf_x + 10'd1);
@@ -397,7 +404,7 @@ module s32_nbg_rowscroll_live (
         end else if (line_start) begin
             pixctr  <= 9'd0;
             running <= 1'b1;
-        end else if (cen_pix && pixctr != 9'd319)
+        end else if (cen_pix && pixctr != pixlast)
             pixctr <= pixctr + 9'd1;
     end
 

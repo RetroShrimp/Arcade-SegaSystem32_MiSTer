@@ -3,13 +3,14 @@
 An FPGA recreation of Sega's **System 32** arcade board for the
 [MiSTer](https://mister-devel.github.io/MkDocs_MiSTer/) platform, built
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
-**Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football** and
-**Arabian Fight**, which use the same board.
+**Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
+**Arabian Fight** and **Burning Rival**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
 system and the protection module of Golden Axe and Arabian Fight, each running at its original
-clock. The NEC V60 was written from scratch for this core; as far as we know
+clock. (Burning Rival's protection module has never been read out; see
+Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
 it is the first FPGA implementation of that CPU.
 
 ## Supported games
@@ -29,6 +30,8 @@ it is the first FPGA implementation of that CPU.
 | `Arabian Fight.mra` | `arabfgt` | tested on hardware |
 | `Arabian Fight (US).mra` | `arabfgtu` | not yet tested on hardware |
 | `Arabian Fight (Japan).mra` | `arabfgtj` | not yet tested on hardware |
+| `Burning Rival.mra` | `brival` | tested on hardware |
+| `Burning Rival (Japan).mra` | `brivalj` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program). The US
@@ -52,7 +55,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
 3. Put the ROM zips in `games/mame/`: `ga2.zip` (plus `ga2u.zip` or
    `ga2j.zip` for the regional sets), `spidman.zip` (plus `spidmanu.zip` or
    `spidmanj.zip`), `holo.zip`, `svf.zip` (plus `svfo.zip` or
-   `svs.zip`), and `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`).
+   `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`), and
+   `brival.zip` (plus `brivalj.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -64,8 +68,8 @@ report.
 
 ## Controls
 
-Golden Axe, Spider-Man and Arabian Fight take up to four players, Holosseum
-and Super Visual Football two. Each player
+Golden Axe, Spider-Man and Arabian Fight take up to four players, Holosseum,
+Super Visual Football and Burning Rival two. Each player
 uses the D-pad or stick plus these buttons. The MRAs map them to a pad by
 default, and MiSTer's input mapping can change that:
 
@@ -82,6 +86,13 @@ default, and MiSTer's input mapping can change that:
 In Super Visual Football, Pass A and Pass B pass to the teammates marked A
 and B on the pitch. The longer you hold a button, the harder the ball is
 kicked.
+
+**Burning Rival** uses six buttons per player, three punches and three
+kicks, which the core adds as Buttons 4-6. Its MRA maps Light, Medium and
+Heavy Punch to Y, X and L, Light, Medium and Heavy Kick to B, A and R, Start
+to Start and Coin to Select. That uses every pad button, so Service and Test
+have no default: map them in MiSTer's input menu, or use the OSD Service
+option.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -135,8 +146,9 @@ Off before you use it again.
 | Sound | Z80, two YM3438 FM chips and an RF5C68-family PCM chip | `rtl/sound/` (FM by jt12, Z80 by tv80) |
 | Protection (Golden Axe only) | NEC V25 running an encrypted program, talking to the V60 through an MB8421 dual-port RAM | `rtl/sys32/s32_v25.sv` |
 
-In the games' 320-pixel mode the picture is 400 × 262 dots at a 6.25 MHz
-pixel clock, 59.64 Hz.
+In the 320-pixel mode the picture is 400 × 262 dots at a 6.25 MHz pixel
+clock, 59.64 Hz. Burning Rival uses the board's 416-pixel mode: 512 × 262
+dots at 8.053975 MHz, 60.04 Hz.
 
 ## Accuracy
 
@@ -184,9 +196,18 @@ Things you may notice, or may want to know:
   neither, so it is not a reference here. How the RAM's collision (`/BUSY`)
   and interrupt (`/INT`) pins are wired on the protection board is not
   known; like MAME, the core does not connect them.
-- **Not implemented**: the 416-pixel video mode (none of the supported games
-  uses it), and the parts of the V25 that the Golden Axe and Arabian Fight
-  protection programs do not use.
+- **Burning Rival's protection** is an FD1149 security module whose program
+  has never been read out. The game sets a flag in work RAM, waits, and
+  expects the module to have cleared it. The core models exactly that, as
+  MAME does: those flag words read back as 0. Nothing else the game sends
+  to the module affects play.
+- **The 416-pixel mode** (Burning Rival) runs at the video chip's 8.05 MHz
+  dot clock. Where the sync pulse sits in that mode, and on which line the
+  board switches between widths, are not documented; the core switches once
+  per frame, during vertical blanking. CRT Adjust applies to the 320-pixel
+  mode only; a 416-pixel picture is passed through unchanged.
+- **Not implemented**: the parts of the V25 that the Golden Axe and Arabian
+  Fight protection programs do not use.
 
 No real System 32 board was available to this project, so none of the
 behaviour above has been measured against one. Measurements from real boards
@@ -252,6 +273,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

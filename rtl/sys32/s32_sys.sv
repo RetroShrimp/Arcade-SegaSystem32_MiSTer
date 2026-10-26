@@ -78,6 +78,9 @@ module s32_sys (
     // ---- protection V25 opcode table (from the .mra's board descriptor
     // bit 2): 0 = ga2's, 1 = Arabian Fight's. See s32_v25's dec_arf.
     input  logic        prot_arf,
+    // ---- Burning Rival's FD1149 protection model (board descriptor bit 4).
+    // See s32_v60bus's "FD1149 flag words".
+    input  logic        prot_brival,
 
     // ---- video out
     output logic        de,
@@ -87,6 +90,7 @@ module s32_sys (
     output logic        hs,
     output logic        vs,
     output logic        ce_pix,       // cen_pix export for the shell
+    output logic        vid_wide,     // 416-pixel frame (s32_video `wide`)
 
     // ---- audio out
     output logic signed [15:0] audio_l,
@@ -145,12 +149,15 @@ module s32_sys (
 
     // fractional enables: target/clk ratios in 1/65536 steps
     // 12.5/64.4318 = 0.19401 -> 12715 ; 6.25/64.4318 = 0.09700 -> 6357
+    // The 416-pixel mode's dot is the 315-5387's 8.053975 MHz (32.2159 MHz
+    // / 4, s32tech / segas32_v.cpp), exactly clk / 8 -> 8192. s32_video
+    // switches `wide` once per frame, in vblank.
     logic [16:0] acc_pcm, acc_pix;
     logic        cen_pcm, cen_pix;
     always_ff @(posedge clk) begin
         acc_pcm <= {1'b0, acc_pcm[15:0]} + 17'd12715;
         cen_pcm <= acc_pcm[16];
-        acc_pix <= {1'b0, acc_pix[15:0]} + 17'd6357;
+        acc_pix <= {1'b0, acc_pix[15:0]} + (vid_wide ? 17'd8192 : 17'd6357);
         cen_pix <= acc_pix[16];
         ce_pix <= acc_pix[16];
     end
@@ -332,7 +339,8 @@ module s32_sys (
         .ppi_sel(ppi_sel), .ppi_we(ppi_we), .ppi_offset(ppi_offset),
         .ppi_wdata(ppi_wdata), .ppi_rdata(ppi_rdata),
         .ic_sel(ic_sel), .ic_we(ic_we), .ic_addr(ic_addr),
-        .ic_wdata(ic_wdata), .ic_rdata(ic_rdata)
+        .ic_wdata(ic_wdata), .ic_rdata(ic_rdata),
+        .prot_brival(prot_brival)
         , .vid_hold(vram_cpu_hold)
     );
 
@@ -506,7 +514,7 @@ module s32_sys (
         .cab_vmirror(cab_vmirror),
         .disp_en(io_cnt[1]),          // CNT1 display enable
         .de(de), .rgb(vid_rgb), .hblank(hblank), .vblank(vblank),
-        .hs(hs), .vs(vs),
+        .hs(hs), .vs(vs), .wide(vid_wide),
         .ev_vblank_in(ev_vbin), .ev_vblank_out(ev_vbout)
         , .vram_go(vram_go), .vram_cpu_hold(vram_cpu_hold),
         .vram_rf_req(vram_rf_req), .vram_rf_addr(vram_rf_addr),

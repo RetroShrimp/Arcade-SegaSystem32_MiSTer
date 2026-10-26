@@ -111,6 +111,10 @@ module s32_video (
     output logic        vblank,
     output logic        hs,
     output logic        vs,
+    // 416-pixel mode for this frame ($31FF00 bit 15, latched once per frame;
+    // see `wide` below). s32_sys takes its pixel enable from it (clk_sys / 8
+    // when set), s32_board its frame-buffer line length.
+    output logic        wide,
 
     // interrupt controller events (single-cycle pulses)
     output logic        ev_vblank_in, // entering vblank (line 224)
@@ -129,8 +133,22 @@ module s32_video (
     // sit inside the blanking windows
     localparam int HS_BEG = 340, HS_END = 372;  // ~5.1 us hsync
     localparam int VS_BEG = 236, VS_END = 239;  // 3-line vsync
-    // 416 mode (not used by the supported games): 8.053975 MHz dot
+    // 416 mode ($31FF00 bit 15, Burning Rival): 8.053975 MHz dot (32.2159 MHz
+    // / 4, clk_sys / 8 exactly; s32_sys takes `wide` for its pixel enable).
+    // 512 x 262 total. The line takes 4,096 clk_sys against 4,123 in 320
+    // mode, so every per-line budget below keeps its margin. Sync again sits
+    // inside the blanking, on 8-dot boundaries: front porch 24, sync 40, back
+    // porch 32 (s32tech is silent on both modes).
     localparam int HTOTAL_416 = 512, HVIS_416 = 416;
+    localparam int HS_BEG_416 = 440, HS_END_416 = 480;
+    // `wide` selects the mode for a whole frame: it is taken from $31FF00
+    // bit 15 at the last dot of line VVIS-1, as MAME samples the bit once per
+    // frame at the screen update (segas32_v.cpp screen_update_system32).
+    // When the real 315-5387 samples it is not documented (Q46). The latch
+    // block sits after the register decode (r00) below.
+    wire  [8:0] htot = wide ? 9'(HTOTAL_416 - 1) : 9'(HTOTAL - 1);  // last dot
+    wire  [8:0] hvis = wide ? 9'(HVIS_416) : 9'(HVIS);
+    wire  [8:0] hlast = hvis - 9'd1;                 // last visible column
     // Row transfer: the 315-5387 is taken to latch each line's tilemap data
     // during the line before it, so a CPU VRAM write after the transfer
     // shows from the following line. The exact dot is not documented, hence
@@ -140,6 +158,7 @@ module s32_video (
     // double-buffers its row data: the walk fills the next line's bank
     // while the beam reads the current line's.
     localparam int ROW_XFER_HCNT = 64;
+    wire  [8:0] row_xfer_hcnt = 9'(ROW_XFER_HCNT);
 
     // ---- bitmap prefetch hint into the VRAM cache (experimental, tied 0)
     logic        pfh_req;
@@ -157,7 +176,7 @@ module s32_video (
             hcnt <= 9'd0;
             vcnt <= 9'd0;
         end else if (cen_pix) begin
-            if (hcnt == 9'(HTOTAL - 1)) begin
+            if (hcnt == htot) begin
                 hcnt <= 9'd0;
                 if (vcnt == 9'(VTOTAL - 1)) begin
                     vcnt <= 9'd0;
@@ -171,10 +190,11 @@ module s32_video (
         end
     end
 
-    assign hblank = hcnt >= 9'(HVIS);
+    assign hblank = hcnt >= hvis;
     assign vblank = vcnt >= 9'(VVIS);
     // sync inside the blanking windows (see HS_BEG above)
-    assign hs = hcnt >= 9'(HS_BEG) && hcnt < 9'(HS_END);
+    assign hs = wide ? (hcnt >= 9'(HS_BEG_416) && hcnt < 9'(HS_END_416))
+                     : (hcnt >= 9'(HS_BEG) && hcnt < 9'(HS_END));
     assign vs = vcnt >= 9'(VS_BEG) && vcnt < 9'(VS_END);
 
     // ------------------------------------------------------- CPU decode
@@ -424,6 +444,15 @@ module s32_video (
     assign r02 = vreg(8'h02);
     assign r8e = vreg(8'h8E);
 
+    // the frame's width (see the timing block): $31FF00 bit 15 at the last
+    // dot of the last visible line, so the raster switches during vblank and
+    // the per-frame zoom set-up (bf_zinit, the first dot of line VVIS) sees
+    // the new width. Reset: 320, as MAME's screen is until the first update.
+    always_ff @(posedge clk)
+        if (rst) wide <= 1'b0;
+        else if (cen_pix && hcnt == htot && vcnt == 9'(VVIS - 1))
+            wide <= r00[15];
+
     logic [5:0] lay_en;
     always_comb begin
         lay_en[0] = !r02[4] && !r8e[0];
@@ -491,7 +520,7 @@ module s32_video (
     assign pq_use[0] = pq[0]; assign pq_use[1] = pq[1];
     assign pq_use[2] = pq[2]; assign pq_use[3] = pq[3];
 
-    // ---- text layer (s32_text_live): its walk copies all 40 tiles of the
+    // ---- text layer (s32_text_live): its walk copies all 40 (52) tiles of the
     // line (names and patterns) into a private row store; the beam then
     // reads from that store. vr_ok = walk grant, no palette write, no cache
     // stall.
@@ -499,7 +528,7 @@ module s32_video (
     logic [10:0] tl_pix;
     s32_text_live u_text_live (
         .clk(clk), .rst(rst),
-        .cen_pix(bf_pix),
+        .cen_pix(bf_pix), .wide(wide),
         .line_start(bf_ls), .line(row_line), .r5c(vreg(8'h5C)),
         .row_start(row_start), .walk_en(lay_en[0]),
         .vr_ok(row_gnt[0] && cen_r && !rnd_stall),
@@ -689,7 +718,7 @@ module s32_video (
     generate
         for (zli = 0; zli < 2; zli = zli + 1) begin : gzl
             s32_nbg_zoom_live u_zl (
-                .clk(clk), .rst(rst), .cen_pix(bf_pix),
+                .clk(clk), .rst(rst), .cen_pix(bf_pix), .wide(wide),
                 .line(row_line),   // walk-target line; its parity picks the bank
                 .init(bf_zinit), .ready(zl_ready[zli]),
                 .page_a(7'(vreg(8'h40 + 8'(4*zli)) & 16'h7F)),
@@ -735,7 +764,7 @@ module s32_video (
     generate
         for (rli = 0; rli < 2; rli = rli + 1) begin : grl
             s32_nbg_rowscroll_live u_rl (
-                .clk(clk), .rst(rst), .cen_pix(bf_pix),
+                .clk(clk), .rst(rst), .cen_pix(bf_pix), .wide(wide),
                 .line_start(bf_ls), .line(row_line), .bg3(1'(rli)),
                 .page_a(7'(vreg(8'h48 + 8'(4*rli)) & 16'h7F)),
                 .page_b(7'((vreg(8'h48 + 8'(4*rli)) >> 8) & 16'h7F)),
@@ -769,7 +798,7 @@ module s32_video (
     logic bl_pv;
     logic [13:0] bl_pix;
     s32_bitmap_live u_bml (
-        .clk(clk), .rst(rst), .cen_pix(bf_pix),
+        .clk(clk), .rst(rst), .cen_pix(bf_pix), .wide(wide),
         .line_start(bf_ls), .line(row_line), .bpp8(r00[11]),
         .r88(vreg(8'h88)), .r8a(vreg(8'h8A)), .r8c(vreg(8'h8C)),
         // A disabled bitmap layer is not walked (2026-10-19). Its rows can
@@ -797,14 +826,14 @@ module s32_video (
     // programming a known rectangle, L=100 R=200: exactly columns 100..200
     // are clipped.)
     //
-    // It also saturates at 319: bf_col runs past 320 while the mixer
-    // pipeline drains, and screen column 319 is taken during the drain, so
-    // without the limit a rectangle with R = $13F would not clip column 319
-    // (MAME clips it).
+    // It also saturates at the last column (319, or 415 in the wide mode):
+    // bf_col runs past the line while the mixer pipeline drains, and the
+    // last screen column is taken during the drain, so without the limit a
+    // rectangle with R = $13F would not clip column 319 (MAME clips it).
     wire [8:0] clip_x;
     wire [7:0] clip_ln;
     assign clip_x  = (bf_col == 9'd0)   ? 9'd0
-                   : (bf_col > 9'd320)  ? 9'd319
+                   : (bf_col > hvis)    ? hlast
                    : (bf_col - 9'd1);
     assign clip_ln = bf_line;
 
@@ -816,8 +845,9 @@ module s32_video (
     // nibble selects it sees the substituted span, with its ordinary clip-IN/
     // OUT polarity. Edges are inclusive; a $FFFF word = no window on the line;
     // left > right = empty. Under global flip the span mirrors like the
-    // rects: x is in [319-right, 319-left] <=> left <= 319-x <= right.
-    wire [8:0] lw_x = r00[9] ? (9'd319 - clip_x) : clip_x;
+    // rects: x is in [W-1-right, W-1-left] <=> left <= W-1-x <= right, W
+    // the visible width (MAME mirrors over visarea.right()).
+    wire [8:0] lw_x = r00[9] ? (hlast - clip_x) : clip_x;
     wire [3:0] lw_arm = {rl_win_mode[1], rl_win_mode[0], 2'b00};
     wire lw_in2 = rl_win_act[0] && ({1'b0, lw_x} >= rl_win_lo[0])
                                 && ({1'b0, lw_x} <= rl_win_hi[0]);
@@ -832,7 +862,7 @@ module s32_video (
                 .x(clip_x), .y(clip_ln),
                 .clipen(r02[11 + cli]), .clipout(r02[6 + cli]),
                 .winmask(4'(vreg(8'h06) >> (4 * cli))),
-                .gflip(r00[9]),
+                .gflip(r00[9]), .sw({1'b0, hvis}),
                 .win_l(wl), .win_t(wt), .win_r(wr_), .win_b(wb),
                 .lw_arm(lw_arm), .lw_in(lw_in),
                 .draw(nbg_draw_live[cli])
@@ -843,7 +873,7 @@ module s32_video (
     s32_clip u_c4l (
         .x(clip_x), .y(clip_ln),
         .clipen(r02[15]), .clipout(r02[10]),
-        .winmask(4'b0001), .gflip(r00[9]),
+        .winmask(4'b0001), .gflip(r00[9]), .sw({1'b0, hvis}),
         .win_l(w4l), .win_t(w4t), .win_r(w4r), .win_b(w4b),
         .lw_arm(4'd0), .lw_in(4'd0),       // bitmap = window 4, no table
         .draw(bm_draw_live)
@@ -874,6 +904,8 @@ module s32_video (
     // before firing.
     localparam int BF_LEAD   = 10;
     localparam int BF_FSTART = HTOTAL - BF_LEAD;     // fetch-start dot (HBLANK)
+    // the same lead from the end of a 416-mode line (HBLANK is 96 dots there)
+    wire [8:0] bf_fstart = wide ? 9'(HTOTAL_416 - BF_LEAD) : 9'(BF_FSTART);
     // mixer q_* -> mix_rgb latency (5 cen_mix: q_* is read by the mixer's s0
     // stage one tick after capture, then s0 -> s0r -> s1 -> rgb is 4 more) and
     // the bf_col -> screen-column offset. The pen for screen column C is
@@ -903,7 +935,7 @@ module s32_video (
     // NBG3, bitmap) until every walk is done. A walk pauses (vr_ok low) for
     // a CPU palette write or a VRAM cache fill; the beam never does. The
     // walks need ~672 clk in the worst case without stalls.
-    wire row_go = cen_pix && (hcnt == 9'(ROW_XFER_HCNT)) && bf_zrdy && bf_up_vis;
+    wire row_go = cen_pix && (hcnt == row_xfer_hcnt) && bf_zrdy && bf_up_vis;
     always_ff @(posedge clk) begin
         if (rst) begin
             row_start <= 1'b0; row_gnt <= '0; row_active <= 1'b0;
@@ -938,7 +970,7 @@ module s32_video (
                 // the upcoming line is vcnt+1 (wrapping to 0 at the last raster
                 // line). Firing during the 38 vblank lines would over-advance
                 // the zoom srcy DDA (one line_start per fetch).
-                if (hcnt == 9'(BF_FSTART) && bf_zrdy && bf_up_vis) begin
+                if (hcnt == bf_fstart && bf_zrdy && bf_up_vis) begin
                     bf_ls   <= 1'b1;
                     bf_line <= bf_up_line;
                     bf_col  <= 9'd0;
@@ -948,10 +980,11 @@ module s32_video (
                 end else if (bf_st == BF_STREAM) begin
                     bf_pix <= 1'b1;                  // advance core, present pen(bf_col)
                     bf_cen <= 1'b1;                  // mixer taps / DRAINS that pen
-                    // stream 320 real columns (bf_col 0..319, cores cap pixctr
-                    // at 319 during the tail) plus BF_OFF drain pulses so the
-                    // last columns flush out of the mixer pipeline.
-                    if (bf_col == 9'(9'd319 + BF_OFF)) bf_st <= BF_IDLE;
+                    // stream the visible columns (bf_col 0..hlast, cores cap
+                    // pixctr at hlast during the tail) plus BF_OFF drain
+                    // pulses so the last columns flush out of the mixer
+                    // pipeline.
+                    if (bf_col == hlast + 9'(BF_OFF)) bf_st <= BF_IDLE;
                     else bf_col <= bf_col + 9'd1;
                 end
             end
@@ -999,15 +1032,17 @@ module s32_video (
     //  - DRAIN. bf_col runs to 319 + BF_OFF, and screen column 319 is
     //    taken from a drain-phase capture (see clip_x), so rd_x = 320..324
     //    would read past the line. rd_x saturates at 319, as clip_x does.
-    // Both also keep spr_x (and 319 - rd_x under flip) inside 0..319, which
-    // s32_board's framebuffer line fetch assumes: it prefetches only bursts
-    // 0..39 and indexes fbl0/fbl1 with fbr_x[8:3].
+    // Both also keep spr_x (and hlast - rd_x under flip) inside the visible
+    // width, which s32_board's framebuffer line fetch assumes: it prefetches
+    // only the bursts of the visible columns (0..39, or 0..51 when wide) and
+    // indexes fbl0/fbl1 with fbr_x[8:3]. (In the wide mode the saturation
+    // limit is 415.)
     always_ff @(posedge clk) begin
         if (rst) begin rd_x <= 9'd0; rd_v <= 1'b0; px_valid <= 1'b0; end
         else begin
             if (bf_ls) rd_x <= 9'd0;
             else if (cen_mix)
-                rd_x <= (bf_col > 9'd319) ? 9'd319 : bf_col;
+                rd_x <= (bf_col > hlast) ? hlast : bf_col;
             if (cen_mix) begin
                 rd_v     <= 1'b1;
                 px_valid <= rd_v;
@@ -1016,9 +1051,10 @@ module s32_video (
     end
 
     // sprite framebuffer scan: MAME mix-loop semantics — the latched
-    // OUT flip reverses the scan direction, it does not move sprites
+    // OUT flip reverses the scan direction, it does not move sprites; the
+    // scan starts at the visible width's last column (cliprect.right())
     assign spr_re = rd_v;
-    assign spr_x = spr_flip[0] ? (9'd319 - rd_x) : rd_x;
+    assign spr_x = spr_flip[0] ? (hlast - rd_x) : rd_x;
     // the sprite frame buffer line is the beam's visible line (bf_line)
     assign spr_line = spr_flip[1] ? (8'd223 - bf_line) : bf_line;
 
@@ -1067,8 +1103,8 @@ module s32_video (
     logic [14:0] rgb_scan;
     always_ff @(posedge clk)
         if (cen_pix) begin
-            de <= (hcnt < 9'(HVIS)) && (vcnt < 9'(VVIS));
-            if (hcnt < 9'(HVIS))
+            de <= (hcnt < hvis) && (vcnt < 9'(VVIS));
+            if (hcnt < hvis)
                 rgb_scan <= bf_lbuf[hcnt[8:0]];               // by-column beam line
         end
     // Scanout line buffer: the mixer streams the line without gaps, so the
@@ -1080,8 +1116,8 @@ module s32_video (
     logic       bf_lwe;
     assign bf_wx  = bf_col - 9'(BF_OFF);
     assign bf_lwe = cen_mix && rgb_valid && (bf_col >= 9'(BF_OFF))
-                    && (bf_wx <= 9'd319);
-    (* ramstyle = "MLAB" *) logic [14:0] bf_lbuf [0:319];
+                    && (bf_wx <= hlast);
+    (* ramstyle = "MLAB" *) logic [14:0] bf_lbuf [0:415];
     always_ff @(posedge clk)
         if (bf_lwe) bf_lbuf[bf_wx] <= mix_rgb;
     // 315-5296 CNT1 (TVKL) display enable: blank the output. Registered
