@@ -20,6 +20,22 @@
 // ea_kind: 0 = memory EA valid, 1 = register direct (no EA), 2 = immediate
 // (quick or sized; value extraction is the decoder's job), 3 = deferred
 // (ea = pointer address; sequencer must read memory and finish), 4 = illegal.
+//
+// Bit addressing (bitmode = 1, the Format VIIb bit-string operands of
+// MOVBSU/MOVBSD). The mode encodings and lengths are the ordinary ones, but
+// what would be a byte displacement or a scaled index becomes a signed BIT
+// offset from the base instead (NEC V60 manual ch.3 "bit addressing";
+// MAME am2.hxx bam2* / s_BAMTable2):
+//   disp[Rn], disp[PC]          ea = Rn / PC,          bit_off = disp
+//   [Rn], /addr                 ea = Rn / addr,        bit_off = 0
+//   [Rn+], [-Rn]                step 1 byte (MAME moddim 10)
+//   disp[Rn](Rx), [Rn](Rx), disp[PC](Rx), /addr(Rx)
+//                               ea = base + disp,      bit_off = Rx (unscaled)
+//   deferred [disp[Rn]], [/addr], ...   K_DEF,         bit_off = 0
+//   deferred indexed            K_DEF, def_idxoff = 0, bit_off = Rx
+//   double displacement (m=1 0-2, PC 28-30)  K_DEF; the sequencer takes
+//                               the second displacement as the bit offset
+//   register direct and immediates are illegal (manual p.7-55: X) -> K_BAD.
 
 module v60_ea (
     input  logic [79:0] am_bytes,   // mode byte = [79:72], extensions follow
@@ -28,6 +44,7 @@ module v60_ea (
     input  logic [31:0] reg_val,    // value of register reg_sel
     input  logic [31:0] idx_val,    // value of index register (indexed modes)
     input  logic [31:0] pc,         // instruction start address
+    input  logic        bitmode,    // Format VIIb bit-string operand
     output logic [4:0]  reg_sel,    // register named by the mode byte
     output logic [4:0]  idx_sel,    // index register (indexed modes)
     output logic [31:0] ea,
@@ -38,7 +55,10 @@ module v60_ea (
     // fetched pointer (EA = *[stage-1] + Rx*size, per MAME am1
     // DisplacementIndirectIndexed / PCDisplacementIndirectIndexed /
     // DirectAddressDeferredIndexed); 0 for every other mode
-    output logic [31:0] def_idxoff
+    output logic [31:0] def_idxoff,
+    // bitmode: the signed bit offset from ea (or from the deferred pointer);
+    // 0 outside bitmode
+    output logic [31:0] bit_off
 );
 
     localparam logic [2:0] K_MEM = 3'd0, K_REG = 3'd1, K_IMM = 3'd2,
@@ -63,13 +83,15 @@ module v60_ea (
         d16 = {{16{am_bytes[63]}}, am_bytes[63:56], am_bytes[71:64]};
         d32 = {am_bytes[47:40], am_bytes[55:48], am_bytes[63:56], am_bytes[71:64]};
 
-        size = (opsize == 2'd0) ? 32'd1 : (opsize == 2'd1) ? 32'd2 : 32'd4;
+        size = (bitmode || opsize == 2'd0) ? 32'd1
+             : (opsize == 2'd1) ? 32'd2 : 32'd4;
 
         ea       = 32'd0;
         ea_kind  = K_BAD;
         base_wb  = reg_val;
         base_wen = 1'b0;
         def_idxoff = 32'd0;
+        bit_off  = 32'd0;
 
         if (!m) begin
             unique case (top)
@@ -230,6 +252,51 @@ module v60_ea (
                 end
                 default: ea_kind = K_BAD;
             endcase
+        end
+
+        // bit addressing: move the displacement / index out of the address
+        // into bit_off (see the header). The byte-address computations above
+        // stay the reference for every other instruction.
+        if (bitmode) begin
+            if (!m) begin
+                unique case (top)
+                    3'd0: begin ea = reg_val; bit_off = d8;  end
+                    3'd1: begin ea = reg_val; bit_off = d16; end
+                    3'd2: begin ea = reg_val; bit_off = d32; end
+                    3'd7: begin
+                        if (sub == 5'd16) begin ea = pc; bit_off = d8;  end
+                        if (sub == 5'd17) begin ea = pc; bit_off = d16; end
+                        if (sub == 5'd18) begin ea = pc; bit_off = d32; end
+                        if (ea_kind == K_IMM) ea_kind = K_BAD;
+                    end
+                    default: ;
+                endcase
+            end else if (top == 3'd3) begin
+                ea_kind = K_BAD;                       // register direct
+            end else if (top == 3'd6) begin
+                // indexed: base + disp in bytes, Rx as an unscaled bit offset
+                bit_off = idx_val;
+                def_idxoff = 32'd0;
+                unique case (nxt[7:5])
+                    3'd0: ea = reg_val + {{24{am_bytes[63]}}, am_bytes[63:56]};
+                    3'd1: ea = reg_val + {{16{am_bytes[55]}}, am_bytes[55:48],
+                                          am_bytes[63:56]};
+                    3'd2: ea = reg_val + {am_bytes[39:32], am_bytes[47:40],
+                                          am_bytes[55:48], am_bytes[63:56]};
+                    3'd3: ea = reg_val;
+                    3'd7: unique case (nxt[4:0])
+                        5'd16: ea = pc + {{24{am_bytes[63]}}, am_bytes[63:56]};
+                        5'd17: ea = pc + {{16{am_bytes[55]}}, am_bytes[55:48],
+                                          am_bytes[63:56]};
+                        5'd18: ea = pc + {am_bytes[39:32], am_bytes[47:40],
+                                          am_bytes[55:48], am_bytes[63:56]};
+                        5'd19: ea = {am_bytes[39:32], am_bytes[47:40],
+                                     am_bytes[55:48], am_bytes[63:56]};
+                        default: ;                     // deferred: ea is the
+                    endcase                            // pointer already
+                    default: ;                         // 4-6: deferred indexed
+                endcase
+            end
         end
     end
 

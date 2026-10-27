@@ -71,7 +71,10 @@ module v60 (
         // encoding (HUD/bench prints of dut.u_v60.state stay comparable)
         S_STR_FILL,
         S_CALL2,                      // call: push next PC, SP -= 8, jump
-        S_RET3                        // ret: SP += 8 + num (after PC, AP pops)
+        S_RET3,                       // ret: SP += 8 + num (after PC, AP pops)
+        // movbsu/movbsd (bit-string move, one bit a cycle)
+        S_BS_LEN, S_BS_ADDR, S_BS_NEXT, S_BS_CAPS, S_BS_CAPD, S_BS_BIT,
+        S_BS_FLUSH, S_BS_END1, S_BS_END2
     } state_e;
     state_e state;
 
@@ -207,11 +210,16 @@ module v60 (
         .preg_wen(preg_wen_m), .preg_wdata(preg_wdata_m)
     );
 
+    // movbsu (65) / movbsd (66): Format VIIb bit-string operands, resolved
+    // in bit-addressing mode (v60_ea header)
+    logic is_bs;
+    assign is_bs = (exec_q == 8'd65) || (exec_q == 8'd66);
+
     // ---------------------------------------------------------------- EA
     logic [79:0] ea_bytes;
     logic        ea_m;
     logic [1:0]  ea_size;
-    logic [31:0] ea_out, ea_wb, ea_defidx;
+    logic [31:0] ea_out, ea_wb, ea_defidx, ea_bitoff;
     logic [4:0]  ea_regsel, ea_idxsel;
     logic [2:0]  ea_kind;
     logic        ea_wen;
@@ -224,11 +232,11 @@ module v60 (
 
     v60_ea u_ea (
         .am_bytes(ea_bytes), .m(ea_m), .opsize(ea_size),
-        .reg_val(rd_b), .idx_val(rd_a), .pc(pc),
+        .reg_val(rd_b), .idx_val(rd_a), .pc(pc), .bitmode(is_bs),
         .reg_sel(ea_regsel), .idx_sel(ea_idxsel),
         .ea(ea_out), .ea_kind(ea_kind),
         .base_wb(ea_wb), .base_wen(ea_wen),
-        .def_idxoff(ea_defidx)
+        .def_idxoff(ea_defidx), .bit_off(ea_bitoff)
     );
 
     // ---------------------------------------------------------------- ops
@@ -402,9 +410,10 @@ module v60 (
         (exec_q == 8'd64) ||                     // skpcd: src string address
         (exec_q == 8'd61) ||                     // cmpc: src string address
         (exec_q == 8'd62) ||                     // movcfu: src string address
-        (exec_q == 8'd63);                       // call: target address (op2,
+        (exec_q == 8'd63) ||                     // call: target address (op2,
                                                  // the arg list, is address-
                                                  // only via !op2_need_val)
+        is_bs;                                   // movbs: bit-string base
 
     // op2 old value needed from MEMORY (RMW, bit ops, xch, updpsw, test1);
     // register destinations always read via the port (width merge), which
@@ -517,6 +526,21 @@ module v60 (
     logic [31:0] str_dest;            // min(len1,len2) for copies
     logic [31:0] str_elem;            // element size in bytes
     logic [7:0]  ext1_b, ext2_b;      // F7a length extension bytes
+
+    // bit-string (movbsu/movbsd) working registers. Each operand resolves to
+    // a byte base (op1/op2_ea_q) plus a signed bit offset (bs_off1/2); the
+    // loop keeps the current source and destination bytes cached, as MAME's
+    // opMOVBSU/D (op7a.hxx) does, and moves one bit per cycle.
+    logic [31:0] bs_off1, bs_off2;    // signed bit offsets from the bases
+    logic [31:0] bs_len, bs_i;
+    logic [31:0] bs_sa, bs_da, bs_wa; // src byte, dst byte, dst byte to write
+    logic [2:0]  bs_sb, bs_db;        // bit positions within them
+    logic [7:0]  bs_sd, bs_dd;        // cached src / dst bytes
+    logic        bs_needs, bs_needd, bs_wpend;
+    logic        bs_down;
+    logic [31:0] bs_o1, bs_o2;        // offsets moved to the starting bit
+    assign bs_o1 = bs_off1 + (bs_down ? bs_len - 32'd1 : 32'd0);
+    assign bs_o2 = bs_off2 + (bs_down ? bs_len - 32'd1 : 32'd0);
 
     // element addresses per mode (down-copy and the downward scan walk
     // high-to-low; a scan's str_dest is its length)
@@ -720,6 +744,24 @@ module v60 (
                 mem_we = 1'b1; mem_addr = str_a2;
                 mem_size = str_elem[2:0]; mem_wdata = rd_a;
             end
+            S_BS_LEN: if (ext1_b[7]) ra_a = ext1_b[4:0];
+            S_BS_NEXT: begin
+                // priority: a new source byte, then the finished destination
+                // byte, then the new destination byte (MAME's order within
+                // one bit: src refill first, then dst write + refill)
+                if (bs_needs) begin
+                    mem_re = 1'b1; mem_addr = bs_sa; mem_size = 3'd1;
+                end else if (bs_wpend) begin
+                    mem_we = 1'b1; mem_addr = bs_wa; mem_size = 3'd1;
+                    mem_wdata = {24'd0, bs_dd};
+                end else if (bs_needd) begin
+                    mem_re = 1'b1; mem_addr = bs_da; mem_size = 3'd1;
+                end
+            end
+            S_BS_FLUSH: begin
+                mem_we = 1'b1; mem_addr = bs_da; mem_size = 3'd1;
+                mem_wdata = {24'd0, bs_dd};
+            end
             S_PUSHM: begin
                 ra_a = mask_idx[4:0];
                 if (mask_q != 32'd0 && mask_q[mask_idx[4:0]]) begin
@@ -859,6 +901,7 @@ module v60 (
                                 end
                                 3'd0: begin         // memory
                                     op1_ea_q <= ea_out; op1_ismem <= 1'b1;
+                                    bs_off1 <= ea_bitoff;
                                     if (ea_wen) begin
                                         wen <= 1'b1; waddr <= ea_regsel;
                                         wdata <= ea_wb;
@@ -878,9 +921,13 @@ module v60 (
                     endcase
                 end
                 S_OP1_DEF: begin
+                    // bit mode: the second displacement (or the index, via
+                    // ea_bitoff) is a bit offset from the fetched pointer
                     op1_ea_q <= mem_rdata + ea_defidx +
-                        (def_has_d2(ea_bytes, op1_m) ? def_disp2(ea_bytes)
-                                                     : 32'd0);
+                        ((def_has_d2(ea_bytes, op1_m) && !is_bs)
+                            ? def_disp2(ea_bytes) : 32'd0);
+                    bs_off1 <= def_has_d2(ea_bytes, op1_m) ? def_disp2(ea_bytes)
+                                                           : ea_bitoff;
                     op1_ismem <= 1'b1;
                     state <= op1_addr_only
                         ? ((op2_d == OD_NONE) ? S_EXEC : S_OP2_EA)
@@ -913,6 +960,7 @@ module v60 (
                                 end
                                 3'd0: begin
                                     op2_ea_q <= ea_out; op2_ismem <= 1'b1;
+                                    bs_off2 <= ea_bitoff;
                                     if (ea_wen) begin
                                         wen <= 1'b1; waddr <= ea_regsel;
                                         wdata <= ea_wb;
@@ -930,8 +978,10 @@ module v60 (
                 end
                 S_OP2_DEF: begin
                     op2_ea_q <= mem_rdata + ea_defidx +
-                        (def_has_d2(ea_bytes, op2_m) ? def_disp2(ea_bytes)
-                                                     : 32'd0);
+                        ((def_has_d2(ea_bytes, op2_m) && !is_bs)
+                            ? def_disp2(ea_bytes) : 32'd0);
+                    bs_off2 <= def_has_d2(ea_bytes, op2_m) ? def_disp2(ea_bytes)
+                                                           : ea_bitoff;
                     op2_ismem <= 1'b1;
                     state <= op2_need_val ? S_OP2_RD : S_EXEC;
                 end
@@ -1097,6 +1147,15 @@ module v60 (
                                 wen <= 1'b1; waddr <= 5'd29;
                                 wdata <= op2_ea_q;
                                 state <= S_CALL2;
+                            end
+                            8'd65, 8'd66: begin
+                                // movbsu / movbsd (NEC V60 manual p.7-55,
+                                // MOVBS): copy blen bits from bsrc to bdst,
+                                // upward or downward; CY/OV/S/Z unchanged.
+                                // SegaSonic runs movbsd in its attract demo
+                                // (sonic 098FCE, sonicp 0897C0).
+                                bs_down <= (exec_q == 8'd66);
+                                state <= S_BS_LEN;
                             end
                             8'd44: begin                // halt
                                 trap <= 1'b1; trap_op <= exec_q;
@@ -1386,6 +1445,75 @@ module v60 (
                         // (opSEARCHDH R27 = i); docs/OPEN-QUESTIONS.md Q47.
                         default: wdata <= str_i;
                     endcase
+                    pc <= next_seq_pc; state <= S_FETCH;
+                end
+
+                // ------------------------------------------ bit strings
+                S_BS_LEN: begin                     // blen: Rn or 7-bit imm
+                    bs_len <= ext1_b[7] ? rd_a : {25'd0, ext1_b[6:0]};
+                    state <= S_BS_ADDR;
+                end
+                S_BS_ADDR: begin
+                    // the downward form starts at the LAST bit of each
+                    // string (offset + len - 1, as MAME's opMOVBSD); a bit
+                    // address is byte (offset >>> 3), bit (offset & 7)
+                    bs_sa <= op1_ea_q + {{3{bs_o1[31]}}, bs_o1[31:3]};
+                    bs_sb <= bs_o1[2:0];
+                    bs_da <= op2_ea_q + {{3{bs_o2[31]}}, bs_o2[31:3]};
+                    bs_db <= bs_o2[2:0];
+                    bs_i <= 32'd0;
+                    bs_needs <= 1'b1; bs_needd <= 1'b1; bs_wpend <= 1'b0;
+                    if (bs_len == 32'd0) begin      // nothing to move: no
+                        pc <= next_seq_pc;          // accesses, R27/R28 kept
+                        state <= S_FETCH;
+                    end else
+                        state <= S_BS_NEXT;
+                end
+                S_BS_NEXT: begin                    // access issued comb
+                    if (bs_needs) state <= S_BS_CAPS;
+                    else if (bs_wpend) bs_wpend <= 1'b0;
+                    else if (bs_needd) state <= S_BS_CAPD;
+                    else state <= S_BS_BIT;
+                end
+                S_BS_CAPS: begin
+                    bs_sd <= mem_rdata[7:0]; bs_needs <= 1'b0;
+                    state <= S_BS_NEXT;
+                end
+                S_BS_CAPD: begin
+                    bs_dd <= mem_rdata[7:0]; bs_needd <= 1'b0;
+                    state <= S_BS_NEXT;
+                end
+                S_BS_BIT: begin
+                    bs_dd[bs_db] <= bs_sd[bs_sb];
+                    bs_i <= bs_i + 32'd1;
+                    if (bs_i + 32'd1 == bs_len)
+                        state <= S_BS_FLUSH;        // R27/R28 stay on the
+                    else begin                      // bytes of this last bit
+                        if (bs_sb == (bs_down ? 3'd0 : 3'd7)) begin
+                            bs_sa <= bs_down ? bs_sa - 32'd1 : bs_sa + 32'd1;
+                            bs_needs <= 1'b1;
+                        end
+                        if (bs_db == (bs_down ? 3'd0 : 3'd7)) begin
+                            bs_wa <= bs_da;
+                            bs_da <= bs_down ? bs_da - 32'd1 : bs_da + 32'd1;
+                            bs_wpend <= 1'b1; bs_needd <= 1'b1;
+                        end
+                        bs_sb <= bs_down ? bs_sb - 3'd1 : bs_sb + 3'd1;
+                        bs_db <= bs_down ? bs_db - 3'd1 : bs_db + 3'd1;
+                        state <= (bs_sb == (bs_down ? 3'd0 : 3'd7) ||
+                                  bs_db == (bs_down ? 3'd0 : 3'd7))
+                                 ? S_BS_NEXT : S_BS_BIT;
+                    end
+                end
+                S_BS_FLUSH: state <= S_BS_END1;     // last dst byte (comb)
+                S_BS_END1: begin
+                    // NEC manual: afterwards R28/R27 hold the addresses of
+                    // the bytes containing the final bit of each string
+                    wen <= 1'b1; waddr <= 5'd28; wdata <= bs_sa;
+                    state <= S_BS_END2;
+                end
+                S_BS_END2: begin
+                    wen <= 1'b1; waddr <= 5'd27; wdata <= bs_da;
                     pc <= next_seq_pc; state <= S_FETCH;
                 end
 

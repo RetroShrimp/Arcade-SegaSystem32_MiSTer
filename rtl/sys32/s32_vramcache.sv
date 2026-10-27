@@ -490,6 +490,16 @@ module s32_vramcache #(
     assign rnd_hold  = rnd_re
                        && (
                            pwq_m_rword ||
+                           // the drain edge pops the queue (pwq_m_rword
+                           // falls) and raises cwr_stb, but the latch
+                           // valid bits it clears drop one edge LATER, so
+                           // for this one cycle a latch hit on the written
+                           // row is the pre-write copy (rb_ld_ok carries
+                           // the same guard). Found by the render-read
+                           // BIST on SegaSonic's boot: $31FF7E read back
+                           // 0000 the cycle after its 00DF drained
+                           // (docs/sonic-bringup.md §6.3).
+                           (cwr_stb && (cwr_row == r_a[15:3])) ||
                            !((rstt==R_STREAM
                                  && (rline_hit || nx_hit || pv_hit))
                                 || rb_ld_ok));

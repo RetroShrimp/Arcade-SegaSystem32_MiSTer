@@ -82,6 +82,13 @@ module s32_board (
     input  logic        prot_brival,
     // Dark Edge's FD1149 model (board descriptor bit 5) — see s32_v60bus
     input  logic        prot_darkedge,
+    // SegaSonic: trackball board (descriptor bit 6) and its counts, and the
+    // FD1149 317-0213 model (bit 7); see s32_sys
+    input  logic        trk_board,
+    input  logic [2:0]  trk_stb,
+    input  logic [35:0] trk_dx,
+    input  logic [35:0] trk_dy,
+    input  logic        prot_sonic,
 
 
     // ---- EEPROM image
@@ -168,6 +175,8 @@ module s32_board (
         .fbr_data(fbr_data), .fb_top_line(fb_top_line),
         .cab_vmirror(cab_vmirror), .prot_arf(prot_arf),
         .prot_brival(prot_brival), .prot_darkedge(prot_darkedge),
+        .trk_board(trk_board), .trk_stb(trk_stb), .trk_dx(trk_dx),
+        .trk_dy(trk_dy), .prot_sonic(prot_sonic),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
         .audio_l(audio_l), .audio_r(audio_r),

@@ -241,9 +241,16 @@ module s32_nbg_zoom_live (
     always_ff @(posedge clk)
         if (st_p) nrow_pf[{walk_bank, st_idx}] <= vr_rdata;
 
+    // The snq read edge must also follow the walk's LAST store: walking
+    // drops when word 63 is consumed, but st_p writes it one edge later, so
+    // a read on that edge returns the bank's old word 63 (two lines back).
+    // A line whose first beam column is 63 (canvas x 1008-1023 at the left
+    // edge: SegaSonic's high-score screen scrolls NBG0 to X = -15) then
+    // fetched the wrong tile row's pattern for the wrapped strip
+    // (docs/sonic-bringup.md §6, MAME-state render f3290-3303).
     always_ff @(posedge clk) begin
         snq     <= nrow_pf[{walk_bank, pf_ccol}];  // pf prefetches the WALK line
-        pf_ok_q <= pf_run && !walking;   // the snq read edge was walk-free
+        pf_ok_q <= pf_run && !walking && !st_p;    // read edge walk- and store-free
     end
 
     assign pf_vld  = pf_run && !pf_done_r && !pf_adv && !walking && pf_ok_q;

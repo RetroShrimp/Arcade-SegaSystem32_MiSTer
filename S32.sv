@@ -109,6 +109,8 @@ wire crt_enable;
 wire   [1:0] buttons;
 wire [127:0] status;
 wire  [31:0] joystick_0, joystick_1, joystick_2, joystick_3;
+wire  [15:0] stick_0, stick_1, stick_2;   // left analog: [7:0] X, [15:8] Y
+wire  [24:0] ps2_mouse;                   // [24] toggles per packet
 assign crt_enable = status[35] & ~forced_scandoubler;
 
 wire        ioctl_download;
@@ -148,7 +150,11 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
 	.joystick_2(joystick_2),
-	.joystick_3(joystick_3)
+	.joystick_3(joystick_3),
+	.joystick_l_analog_0(stick_0),
+	.joystick_l_analog_1(stick_1),
+	.joystick_l_analog_2(stick_2),
+	.ps2_mouse(ps2_mouse)
 );
 
 ///////////////////////   CLOCKS   ///////////////////////////////
@@ -388,7 +394,12 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          flag-word rule (MAME init_brival). Board build, like bit 2.
 //   bit 5  FD1149 protection module 317-0204 (Dark Edge): s32_v60bus's
 //          vblank writes and $A00000 window (MAME init_darkedge)
-//   bits 6-7  reserved, must be 0
+//   bit 6  837-8685 trackball I/O board (SegaSonic): three uPD4701A at
+//          $C00040/48/50, and the game's one-button, three-player harness
+//          (MAME sega_system32_track, INPUT_PORTS_START(sonic))
+//   bit 7  FD1149 protection module 317-0213 (SegaSonic rev C): s32_v60bus's
+//          level load on a write to $20E5C4 (MAME init_sonic)
+// The byte is now full: a further board needs a second descriptor byte.
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -414,8 +425,14 @@ function [7:0] pad (input [31:0] j);
 	pad = ~{j[1], j[0], j[3], j[2], 1'b0, j[6], j[5], j[4]};
 endfunction
 
-wire [7:0] in_p1 = pad(joystick_0);
-wire [7:0] in_p2 = pad(joystick_1);
+// Trackball harness (board_cfg[6], SegaSonic): each player has one button,
+// P1's on P1_A bit 0, P2's on P2_A bit 0 and P3's on P1_A bit 2; every
+// other bit of both ports is unused and reads high (MAME
+// INPUT_PORTS_START(sonic)). Coin 3 / Start 3 are SERVICE12 bits 6/7.
+wire trk_board = board_cfg[6];
+wire [7:0] in_p1 = trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
+                             : pad(joystick_0);
+wire [7:0] in_p2 = trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
 // Six-button harness (board_cfg[3], Burning Rival): EXTRA2 carries buttons
 // 4-6 of players 1 and 2 in MAME INPUT_PORTS_START(brival)'s bit order,
 // bits 3 and 6 unknown (read high); EXTRA1 and EXTRA3 are unused.
@@ -463,7 +480,9 @@ always @(posedge clk_sys) begin
 end
 wire test_btn = |osd_test_cnt | joystick_0[10] | joystick_1[10];
 
-wire [7:0] in_service12 = ~{2'b00,
+wire [7:0] in_service12 = ~{
+	trk_board & joystick_2[7],                    // START3 (trackball board)
+	trk_board & joystick_2[8],                    // COIN3  (trackball board)
 	joystick_1[7], joystick_0[7],                 // START2, START1
 	us_cab ? joystick_2[8] : joystick_1[8],       // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
@@ -474,6 +493,61 @@ wire [7:0] in_service12 = ~{2'b00,
 wire [2:0] in_service34 = {1'b1,
 	~(joystick_0[10] | joystick_1[10]),           // push SW2 (test)
 	~(joystick_0[9]  | joystick_1[9])};           // push SW1 (service)
+
+// Trackball counts (board_cfg[6]). A real ball turns two optical encoders,
+// and the uPD4701A counts their edges continuously; here every source adds
+// steps as they arrive, never once a frame (docs/sonic-bringup.md §3):
+//   - P1: the PS/2 mouse, one count per mouse count (MAME's sensitivity
+//     100), and the left analog stick of pad 1;
+//   - P2 / P3: the left analog sticks of pads 2 / 3.
+// A stick is a rate: every 2^15 clk_sys (~1.97 kHz) its signed deflection
+// is added to an accumulator and whole 1/128ths are emitted, so a full
+// deflection rolls ~1,950 counts a second (MAME's keyboard speed is 30 a
+// frame, 1,800 a second); |deflection| < 8 is a dead zone.
+// Directions follow MAME's ports: the X counter runs DOWN as the ball rolls
+// right (PORT_REVERSE on TRACKX), the Y counter up as it rolls toward the
+// player (screen down). PS/2 Y is positive up, MiSTer stick Y positive down.
+// The input scale is a usability setting, not hardware.
+reg [14:0] trk_tick_cnt = 0;
+always @(posedge clk_sys) trk_tick_cnt <= trk_tick_cnt + 1'd1;
+wire trk_tick = &trk_tick_cnt;
+
+function automatic [7:0] stick_dz (input [7:0] v);
+	stick_dz = ($signed(v) > 8'sd7 || $signed(v) < -8'sd7) ? v : 8'd0;
+endfunction
+
+reg  [12:0] trk_acc [0:5];                     // {P1x,P1y,P2x,P2y,P3x,P3y}
+reg  [11:0] trk_step [0:5];
+reg   [2:0] trk_stb;
+reg         mouse_tg = 0;
+wire        mouse_ev = ps2_mouse[24] ^ mouse_tg;
+wire  [8:0] mouse_dx = {ps2_mouse[4], ps2_mouse[15:8]};
+wire  [8:0] mouse_dy = {ps2_mouse[5], ps2_mouse[23:16]};
+wire [15:0] trk_stick [0:2];
+assign trk_stick[0] = stick_0;
+assign trk_stick[1] = stick_1;
+assign trk_stick[2] = stick_2;
+always @(posedge clk_sys) begin
+	mouse_tg <= ps2_mouse[24];
+	trk_stb <= 3'd0;
+	for (int n = 0; n < 6; n++) begin
+		logic [12:0] sum;
+		logic [7:0]  dfl;
+		logic [11:0] st;
+		// X from bits 7:0 (reversed), Y from bits 15:8
+		dfl = stick_dz(n[0] ? trk_stick[n/2][15:8] : trk_stick[n/2][7:0]);
+		sum = trk_acc[n] + (n[0] ? {{5{dfl[7]}}, dfl} : -{{5{dfl[7]}}, dfl});
+		st  = trk_tick ? {{6{sum[12]}}, sum[12:7]} : 12'd0;
+		if (trk_tick) trk_acc[n] <= sum - {st[5:0], 7'd0};
+		// the mouse adds to P1 only
+		if (n < 2 && mouse_ev)
+			st = st + (n == 0 ? -{{3{mouse_dx[8]}}, mouse_dx}
+			                  : -{{3{mouse_dy[8]}}, mouse_dy});
+		trk_step[n] <= st;
+	end
+	trk_stb <= {3{trk_tick}} | {2'b00, mouse_ev};
+	if (rst_core) for (int n = 0; n < 6; n++) trk_acc[n] <= 13'd0;
+end
 
 //////////////////////   THE MACHINE   ///////////////////////////
 
@@ -504,6 +578,11 @@ s32_board board
 	.prot_arf(board_cfg[2]),
 	.prot_brival(board_cfg[4]),
 	.prot_darkedge(board_cfg[5]),
+	.trk_board(trk_board),
+	.trk_stb(trk_stb & {3{trk_board}}),
+	.trk_dx({trk_step[4], trk_step[2], trk_step[0]}),
+	.trk_dy({trk_step[5], trk_step[3], trk_step[1]}),
+	.prot_sonic(board_cfg[7]),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),

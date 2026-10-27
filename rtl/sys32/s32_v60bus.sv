@@ -32,7 +32,9 @@
 //
 // Burning Rival's FD1149 protection module (prot_brival): see the
 // "FD1149 flag words" block below. Dark Edge's (prot_darkedge): the
-// "FD1149 vblank writes" block.
+// "FD1149 vblank writes" block. SegaSonic's (prot_sonic): the "FD1149
+// level load" block. SegaSonic's trackball board (trk_board): uPD4701A
+// counters at I/O offsets 40-57 (R_TRK; s32_upd4701).
 
 module s32_v60bus (
     input  logic        clk,
@@ -121,6 +123,16 @@ module s32_v60bus (
     output logic [1:0]  ppi_offset,
     output logic [7:0]  ppi_wdata,
     input  logic [7:0]  ppi_rdata,
+    // ---- trackball board (SegaSonic's 837-8685, board descriptor bit 6):
+    //      three uPD4701A at I/O offsets 40-47 / 48-4F / 50-57, even bytes
+    //      (MAME system32_trackball_map). trk_offset = {chip, X/Y, U/L}.
+    //      Without the board the window is open bus, as on every other
+    //      game (s32tech: "$C00040-$C0007F normally unused")
+    input  logic        trk_board,
+    output logic        trk_sel,
+    output logic        trk_we,
+    output logic [3:0]  trk_offset,
+    input  logic [7:0]  trk_rdata,
 
     // ---- interrupt controller (8-bit, combinational rdata)
     output logic        ic_sel,
@@ -140,7 +152,11 @@ module s32_v60bus (
     //      only when no V60 cycle is queued (see "FD1149 vblank writes")
     input  logic        prot_darkedge,
     input  logic        fd_vbl,
-    input  logic        bcu_pend
+    input  logic        bcu_pend,
+
+    // ---- SegaSonic's FD1149 protection module (descriptor bit 7): a V60
+    //      write to $20E5C4 loads the level (see "FD1149 level load")
+    input  logic        prot_sonic
 );
 
     // ------------------------------------------------------ work RAM
@@ -178,6 +194,7 @@ module s32_v60bus (
                       wram_qa_l[1], wram_qa_l[0]};
     assign wram_qb = {wram_qb_l[3], wram_qb_l[2],
                       wram_qb_l[1], wram_qb_l[0]};
+
 
     // ------------------------------------------------ sprite list RAM
     // a 16-bit "port" so the serializer treats it like the video and
@@ -218,7 +235,7 @@ module s32_v60bus (
 
     typedef enum logic [3:0] {
         R_ROM, R_WRAM, R_VID, R_SPRRAM, R_SPRCTL, R_SHM,
-        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN
+        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK
     } region_e;
 
     // mirrors (s32tech "Memory map"): the 6xxxxx video pair repeats every
@@ -238,6 +255,8 @@ module s32_v60bus (
         else if (a[23:19] == 5'b10100 && prot_darkedge) region_of = R_OPEN;
         else if (a[23:19] == 5'b10100)               region_of = R_DPRAM;
         else if (a[23:20] == 4'hC && a[6:0] < 7'h20) region_of = R_IO;
+        else if (a[23:20] == 4'hC && trk_board && a[6:3] >= 4'h8
+                 && a[6:3] < 4'hB)                   region_of = R_TRK;
         else if (a[23:20] == 4'hC && a[6:3] == 4'b1100)
                                                      region_of = R_PPI;
         else if (a[23:19] == 5'b11010)               region_of = R_IC;
@@ -281,10 +300,13 @@ module s32_v60bus (
     logic q_fetch;                           // latched: current txn is a fetch
 
     // ------------------------------------------------- request queue
-    typedef enum logic [3:0] {
+    typedef enum logic [4:0] {
         A_IDLE, A_WRAM1, A_WRAM2, A_SUB, A_SUB_W, A_SUB_L, A_DONE,
         A_ROMW, A_OPENW, A_WRAMX, A_SUB_P, A_WRAM1B,
-        A_FD0, A_FD1, A_FD2, A_FD3
+        A_FD0, A_FD1, A_FD2, A_FD3,
+        // appended so every earlier state keeps its encoding (the benches
+        // compare ast with 0, 4 and 7)
+        A_SN0, A_SN1, A_SN2, A_SN3, A_SN4, A_SN5, A_SN6
     } astate_e;
     astate_e ast;
 
@@ -371,6 +393,47 @@ module s32_v60bus (
     // read timing) and writes the countdown back.
     logic fd_pend;                   // a vblank-in is owed its writes
 
+    // ---------------------------------------- FD1149 level load (sonic)
+    // SegaSonic rev C carries an FD1149, 317-0213 (MAME's comment above
+    // ROM_START(sonic)). MAME models it as a write handler on $20E5C4-5
+    // (segas32_m.cpp sonic_level_load_protection): the word written there
+    // is the count of cleared stages n; the module sets $20F06E to the next
+    // stage, 7 for n = 0 and otherwise the BIG-endian halfword at program
+    // ROM $263A + 2n - 2, and clears $20F0BC-$20F0BF. The unprotected
+    // prototype (sonicp) does exactly these three things in software in the
+    // same routine, and rev C is that code with them removed
+    // (docs/sonic-bringup.md §5.2), so the effect is settled; how the real
+    // module sees the write and where it reads the table are not (Q49).
+    //   The core runs it as part of the trigger write: A_WRAMX does the
+    // V60's write as usual, then instead of releasing the bus it runs
+    // A_SN0-A_SN6, so the V60 cannot read $20F06E before the result is
+    // there (the game's first read is a few dozen instructions later, PC
+    // 0008D7), matching MAME, where the handler is part of the write.
+    //   A_SN0  the write lands; set up the read of the $20E5C4 word (a byte
+    //          write still triggers, and MAME then uses the whole word)
+    //   A_SN1/2  BRAM read latency (A_WRAM1/1B)
+    //   A_SN3  n in hand; n = 0 -> level 7, else point the ROM data
+    //          adapter at the table entry (romd_pc follows q_addr)
+    //   A_SN4  wait for the ROM window
+    //   A_SN5  $20F06E = level, $20F0BC/BD = 0
+    //   A_SN6  $20F0BE/BF = 0, release the bus
+    localparam logic [23:0] SN_TRIG  = 24'h20E5C4;
+    localparam logic [13:0] SN_WE5C4 = 14'h3971;  // $20E5C4 >> 2, lanes 0-1
+    localparam logic [13:0] SN_WF06C = 14'h3C1B;  // $20F06E: lanes 2-3
+    localparam logic [13:0] SN_WF0BC = 14'h3C2F;  // $20F0BC-BF: lanes 0-3
+    localparam logic [23:0] SN_TABLE = 24'h00263A;
+    // This V60 write touches $20E5C4/5: its bytes [q_addr, q_addr + q_size)
+    // overlap them. With q_size <= 4 that means a start in $20E5C0-7 at
+    // byte 4 or 5, or at byte 0-3 running past byte 3. (Written as a 21-bit
+    // compare and a 4-bit sum, not two 24-bit adds: the add form tripped a
+    // Quartus 17 quartus_map internal error, docs/sonic-bringup.md §6.)
+    logic        sn_trig;
+    logic [3:0]  sn_end;
+    assign sn_end  = {1'b0, q_addr[2:0]} + {1'b0, q_size};
+    assign sn_trig = prot_sonic && q_addr[23:3] == SN_TRIG[23:3]
+                  && (q_addr[2] ? !q_addr[1] : sn_end > 4'd4);
+    logic [15:0] sn_level;
+
     // wram unaligned assembly (q_addr-based, captured in A_WRAM2)
     logic [63:0] wram_pair;
     assign wram_pair = {wram_qb, wram_qa};
@@ -383,6 +446,7 @@ module s32_v60bus (
             2'd3: wram_bytes = wram_pair[55:24];
         endcase
     end
+
 
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
@@ -456,6 +520,7 @@ module s32_v60bus (
             R_DPRAM: sub_rd8 = o_addr[0] ? 8'hFF : dp_rdata;
             R_IO:    sub_rd8 = o_addr[0] ? 8'hFF : io_rdata;
             R_PPI:   sub_rd8 = o_addr[0] ? 8'hFF : ppi_rdata;
+            R_TRK:   sub_rd8 = o_addr[0] ? 8'hFF : trk_rdata;
             R_IC:    sub_rd8 = ic_rdata;
             default: sub_rd8 = 8'hFF;
         endcase
@@ -476,6 +541,8 @@ module s32_v60bus (
         io_offset = o_addr[6:1]; io_wdata = o_wbyte;
         ppi_sel = 1'b0; ppi_we = 1'b0;
         ppi_offset = o_addr[2:1]; ppi_wdata = o_wbyte;
+        trk_sel = 1'b0; trk_we = 1'b0;
+        trk_offset = {o_addr[4:3], o_addr[2:1]};
         ic_sel = 1'b0; ic_we = 1'b0;
         ic_addr = o_addr[3:0]; ic_wdata = o_wbyte;
         vid_sel = 1'b0; vid_we = 1'b0;
@@ -503,6 +570,7 @@ module s32_v60bus (
                 R_DPRAM:  if (!o_addr[0]) begin dp_sel = 1'b1; dp_we = o_we; end
                 R_IO:     if (!o_addr[0]) begin io_sel = 1'b1; io_we = o_we; end
                 R_PPI:    if (!o_addr[0]) begin ppi_sel = 1'b1; ppi_we = o_we; end
+                R_TRK:    if (!o_addr[0]) begin trk_sel = 1'b1; trk_we = o_we; end
                 R_IC:     begin ic_sel = 1'b1; ic_we = o_we; end
                 R_VID:    begin vid_sel = 1'b1; vid_we = o_we; end
                 R_SPRCTL: begin sc_sel = 1'b1; sc_we = o_we; end
@@ -639,6 +707,47 @@ module s32_v60bus (
                     ast <= A_IDLE;
                 end
 
+                // FD1149 level load (SegaSonic): see the block above
+                A_SN0: begin                // trigger write lands now
+                    wram_aa <= SN_WE5C4;
+                    ast <= A_SN1;
+                end
+                A_SN1: ast <= A_SN2;        // BRAM stage-1 read
+                A_SN2: ast <= A_SN3;        // OREGA stage
+                A_SN3: begin
+                    if (wram_qa[15:0] == 16'd0) begin
+                        sn_level <= 16'd7;
+                        ast <= A_SN5;
+                    end else begin
+                        q_addr <= SN_TABLE + {7'd0, wram_qa[15:0], 1'b0}
+                                  - 24'd2;
+                        ast <= A_SN4;
+                    end
+                end
+                A_SN4:
+                    if (!romd_hold) begin   // big-endian: high byte first
+                        sn_level <= {romd_bytes[111:104], romd_bytes[103:96]};
+                        ast <= A_SN5;
+                    end
+                A_SN5: begin
+                    wram_wen[2] <= 1'b1; wram_waddr[2] <= SN_WF06C;
+                    wram_wd[2] <= sn_level[7:0];
+                    wram_wen[3] <= 1'b1; wram_waddr[3] <= SN_WF06C;
+                    wram_wd[3] <= sn_level[15:8];
+                    for (int l = 0; l < 2; l = l + 1) begin
+                        wram_wen[l] <= 1'b1; wram_waddr[l] <= SN_WF0BC;
+                        wram_wd[l] <= 8'd0;
+                    end
+                    ast <= A_SN6;
+                end
+                A_SN6: begin
+                    for (int l = 2; l < 4; l = l + 1) begin
+                        wram_wen[l] <= 1'b1; wram_waddr[l] <= SN_WF0BC;
+                        wram_wd[l] <= 8'd0;
+                    end
+                    ast <= A_IDLE;
+                end
+
                 A_ROMW:
                     // a fetch reads the romf window, a data read the
                     // romd window; wait for the selected adapter
@@ -672,7 +781,7 @@ module s32_v60bus (
                                     q_wdata[8*i +: 8];
                             end
                         end
-                        ast <= A_IDLE;
+                        ast <= sn_trig ? A_SN0 : A_IDLE;
                     end else begin          // read: address setup
                         wram_aa <= q_addr[15:2];
                         wram_ab <= q_addr[15:2] + 14'd1;
@@ -747,5 +856,6 @@ module s32_v60bus (
             endcase
         end
     end
+
 
 endmodule

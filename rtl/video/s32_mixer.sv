@@ -389,7 +389,13 @@ module s32_mixer (
     // shadow applies when the scan reaches the sprite slot before the
     // winner, and also when the blend scan passes the sprite slot on its
     // way to the second layer (MAME checks the sprite case on the second
-    // scan too; not confirmed on hardware). The bit-15 rule holds for a
+    // scan too; not confirmed on hardware). MAME runs that second scan
+    // whenever the first layer has ANY blendmask bit set, whether or not
+    // the second layer it finds is one the first blends with, so the
+    // shadow does not wait for blend_gate: SegaSonic's cobblestone
+    // foreground has blend bits, sits above the sprite group, and the
+    // character shadows under it are halved in MAME (docs/sonic-bringup.md
+    // §6, sonicp attract f750/f900). The bit-15 rule holds for a
     // TRANSPARENT sprite pixel as well: MAME's mix loop sets
     // `shadow = ~sprpix & sprshadowmask` when the scan reaches the sprite
     // slot, before its transparency test (segas32_v.cpp mix_all_layers,
@@ -404,7 +410,10 @@ module s32_mixer (
     assign spr_shadow_px = spr_shadowpat || spr_bit15sh;
     logic shadow0;
     assign shadow0 = (({1'b0, spr_k} <= firstv)
-                      || (blend_gate && {1'b0, spr_k} <= secondv))
+                      // (secondv = 8, no second layer: MAME's scan
+                      // still passes the sprite slot to the background)
+                      || (f_ent.blendmask != 8'd0
+                          && {1'b0, spr_k} <= secondv))
                      && spr_shadow_px;
 
     // stage 0: register the palette addresses. The priority sort and

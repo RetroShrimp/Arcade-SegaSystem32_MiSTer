@@ -84,6 +84,16 @@ module s32_sys (
     // ---- Dark Edge's FD1149 protection model (board descriptor bit 5).
     // See s32_v60bus's "FD1149 vblank writes".
     input  logic        prot_darkedge,
+    // ---- SegaSonic's 837-8685 trackball I/O board (board descriptor bit
+    // 6): three uPD4701A counters at $C00040/48/50 (s32_upd4701). trk_stb[n]
+    // adds the signed 12-bit steps trk_dx/dy[12n +: 12] to counter n.
+    input  logic        trk_board,
+    input  logic [2:0]  trk_stb,
+    input  logic [35:0] trk_dx,
+    input  logic [35:0] trk_dy,
+    // ---- SegaSonic's FD1149 protection model (board descriptor bit 7).
+    // See s32_v60bus's "FD1149 level load".
+    input  logic        prot_sonic,
 
     // ---- video out
     output logic        de,
@@ -348,7 +358,10 @@ module s32_sys (
         .ic_wdata(ic_wdata), .ic_rdata(ic_rdata),
         .prot_brival(prot_brival),
         .prot_darkedge(prot_darkedge), .fd_vbl(ev_vbin),
-        .bcu_pend(bcu_pend)
+        .bcu_pend(bcu_pend),
+        .trk_board(trk_board), .trk_sel(trk_sel), .trk_we(trk_we),
+        .trk_offset(trk_offset), .trk_rdata(trk_rdata),
+        .prot_sonic(prot_sonic)
         , .vid_hold(vram_cpu_hold)
     );
 
@@ -414,6 +427,28 @@ module s32_sys (
     assign ee_di   = io_out[31];
     assign ee_sclk = io_out[30];
     assign ee_cs   = io_out[29];
+
+    // trackball board: three uPD4701A, selected by trk_offset[3:2]
+    logic        trk_sel, trk_we;
+    logic [3:0]  trk_offset;
+    logic [7:0]  trk_rdata;
+    logic [7:0]  trk_rd [0:2];
+    // (explicit generate + genvar: Quartus 17.0 rejects the bare
+    // `for (genvar ...)` form)
+    genvar gt;
+    generate
+        for (gt = 0; gt < 3; gt = gt + 1) begin : g_trk
+            s32_upd4701 u_upd (
+                .clk(clk), .rst(rst),
+                .cnt_stb(trk_stb[gt]),
+                .dx(trk_dx[12*gt +: 12]), .dy(trk_dy[12*gt +: 12]),
+                .sel(trk_sel && trk_offset[3:2] == gt), .we(trk_we),
+                .offset(trk_offset[1:0]), .rdata(trk_rd[gt])
+            );
+        end
+    endgenerate
+    assign trk_rdata = (trk_offset[3:2] == 2'd0) ? trk_rd[0]
+                     : (trk_offset[3:2] == 2'd1) ? trk_rd[1] : trk_rd[2];
 
     s32_i8255 u_ppi (
         .clk(clk), .rst(rst),

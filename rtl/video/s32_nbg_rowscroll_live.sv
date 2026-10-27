@@ -335,7 +335,11 @@ module s32_nbg_rowscroll_live (
 
     always_ff @(posedge clk) begin
         snq     <= nrow_pf[{walk_bank, pf_ccol}];  // pf prefetches the WALK line
-        pf_ok_q <= pf_run && (wst == W_IDLE);   // snq read edge walk-free
+        // ... and store-free: the walk's last word is written one edge
+        // after wst returns to W_IDLE, so a read on that edge is stale for
+        // column 63 (s32_nbg_zoom_live, the same race; docs/sonic-bringup.md
+        // §6)
+        pf_ok_q <= pf_run && (wst == W_IDLE) && !st_p;
     end
 
     assign pf_vld  = pf_run && !pf_done_r && !pf_adv
