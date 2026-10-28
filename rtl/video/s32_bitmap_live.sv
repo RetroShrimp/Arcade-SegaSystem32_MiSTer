@@ -48,13 +48,6 @@ module s32_bitmap_live (
     output logic [15:0] vr_addr,
     input  logic [15:0] vr_rdata,     // 1-clk registered read
 
-    // VRAM cache prefetch hint for the next line's source row (experimental;
-    // unused here, tied 0). A hint only moves fetches earlier; it never
-    // changes what a read returns.
-    output logic [15:0] pf_hint_addr,
-    output logic        pf_hint_vld,
-    input  logic        pf_hint_take,  // s32_vramcache latched pf_hint_addr
-
     // beam pixel output (pen + color base, 0 = transparent)
     output logic [13:0] pix,
     output logic        pix_valid     // beam word has been fetched
@@ -132,10 +125,6 @@ module s32_bitmap_live (
             end
         end
     end
-
-    // ------------------------------------------------ prefetch hint
-    assign pf_hint_addr = 16'd0;
-    assign pf_hint_vld  = 1'b0;
 
     // ------------------------------------------------------- beam stream
     // srcy latched at row_start; pixctr is the beam column, advanced one

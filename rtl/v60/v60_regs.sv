@@ -20,6 +20,17 @@
 //
 // Two combinational read ports + one write port cover the microcode
 // datapath (one uop reads up to two registers, writes one).
+//
+// R0..R30 stay flops (docs/corertlcleanup.md C3, tried 2026-10-28): as an
+// MLAB they map cleanly (two copies, 907 -> 312 ALUTs, 1,376 -> 453
+// registers) once the write is staged through a register with a read
+// bypass and a written-since-reset mask keeps the reset value, and every
+// bench passes. But the first release fit (seed 11) failed HOLD on the
+// core clock by 24 ps from that staging register into the MLAB's write
+// address, placed in the adjacent LAB -- the same MLAB write-port hold
+// class the S32.qsf works around for jt12 and the HDMI shift registers by
+// forcing flops. A register-file write that can race its own address is
+// not worth ~600 ALMs at 83% utilisation.
 
 module v60_regs (
     input  logic        clk,

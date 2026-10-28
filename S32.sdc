@@ -17,8 +17,6 @@ derive_clock_uncertainty
 #   bf_line (loaded once per line in hblank, stable for the whole line) and
 #   the mixer's own registers. Named exactly rather than as q_*: s32_video
 #   has other q_-prefixed registers that must stay single-cycle.
-#   (altdpram:lb_* and line_q* match nothing in this build; Quartus warns
-#   332174 for them and ignores them.)
 #
 #   -to: only the cen_mix-paced stages (s0_*, s1_*, rgb*). The mixer's
 #   register-write path and the cen_mix enable network are single-cycle and
@@ -28,10 +26,10 @@ derive_clock_uncertainty
 # There is no '-from mixer -to outside' exception: the mixer's outputs
 # feed registers in s32_video that capture on the very next clk_sys edge.
 set_multicycle_path -setup 2 \
-  -from [get_registers {*|s32_video:u_vid|altdpram:lb_*|* *|s32_video:u_vid|spr_q* *|s32_video:u_vid|prda_r* *|s32_video:u_vid|prdb_r* *|s32_video:u_vid|line_q* *|s32_video:u_vid|bf_line* *|s32_video:u_vid|q_text* *|s32_video:u_vid|q_n0* *|s32_video:u_vid|q_n1* *|s32_video:u_vid|q_n2* *|s32_video:u_vid|q_n3* *|s32_video:u_vid|q_bm* *|s32_mixer:u_mix|*}] \
+  -from [get_registers {*|s32_video:u_vid|spr_q* *|s32_video:u_vid|prda_r* *|s32_video:u_vid|prdb_r* *|s32_video:u_vid|bf_line* *|s32_video:u_vid|q_text* *|s32_video:u_vid|q_n0* *|s32_video:u_vid|q_n1* *|s32_video:u_vid|q_n2* *|s32_video:u_vid|q_n3* *|s32_video:u_vid|q_bm* *|s32_mixer:u_mix|*}] \
   -to   [get_registers {*|s32_mixer:u_mix|s0_* *|s32_mixer:u_mix|s1_* *|s32_mixer:u_mix|rgb*}]
 set_multicycle_path -hold 1 \
-  -from [get_registers {*|s32_video:u_vid|altdpram:lb_*|* *|s32_video:u_vid|spr_q* *|s32_video:u_vid|prda_r* *|s32_video:u_vid|prdb_r* *|s32_video:u_vid|line_q* *|s32_video:u_vid|bf_line* *|s32_video:u_vid|q_text* *|s32_video:u_vid|q_n0* *|s32_video:u_vid|q_n1* *|s32_video:u_vid|q_n2* *|s32_video:u_vid|q_n3* *|s32_video:u_vid|q_bm* *|s32_mixer:u_mix|*}] \
+  -from [get_registers {*|s32_video:u_vid|spr_q* *|s32_video:u_vid|prda_r* *|s32_video:u_vid|prdb_r* *|s32_video:u_vid|bf_line* *|s32_video:u_vid|q_text* *|s32_video:u_vid|q_n0* *|s32_video:u_vid|q_n1* *|s32_video:u_vid|q_n2* *|s32_video:u_vid|q_n3* *|s32_video:u_vid|q_bm* *|s32_mixer:u_mix|*}] \
   -to   [get_registers {*|s32_mixer:u_mix|s0_* *|s32_mixer:u_mix|s1_* *|s32_mixer:u_mix|rgb*}]
 
 # ---- V60 CPU: 2 clk_sys periods --------------------------------------------

@@ -30,7 +30,9 @@
 module s32_video (
     input  logic        clk,
     input  logic        rst,
-    input  logic        cen_pix,      // 6.25 MHz enable (top: 50 MHz / 8)
+    input  logic        cen_pix,      // pixel enable: clk_sys x 6357/65536
+                                      // (6.25 MHz) at 320 wide, x 8192/65536
+                                      // at 416 (s32_sys acc_pix)
     input  logic        cen_ren,      // render-side enable (memory ready);
                                       // never stops raster, scanout or CPU
 
@@ -160,13 +162,6 @@ module s32_video (
     localparam int ROW_XFER_HCNT = 64;
     wire  [8:0] row_xfer_hcnt = 9'(ROW_XFER_HCNT);
 
-    // ---- bitmap prefetch hint into the VRAM cache (experimental, tied 0)
-    logic        pfh_req;
-    logic [15:0] pfh_addr;
-    logic        pfh_take;
-    assign pfh_req  = 1'b0;
-    assign pfh_addr = 16'd0;
-
     logic [8:0] hcnt;
     logic [8:0] vcnt;
     always_ff @(posedge clk) begin
@@ -199,10 +194,9 @@ module s32_video (
 
     // ------------------------------------------------------- CPU decode
     // $300000-$3FFFFF VRAM (128KB mirror), $600000-$61FFFF palette/mixer
-    logic sel_vram, sel_pal, sel_mixer;
+    logic sel_vram, sel_pal;
     assign sel_vram  = cpu_sel && cpu_addr[23:20] == 4'h3;
     assign sel_pal   = cpu_sel && cpu_addr[23:16] == 8'h60;
-    assign sel_mixer = cpu_sel && cpu_addr[23:16] == 8'h61;
 
     // Every CPU access is registered here before it touches a RAM or
     // register, so correct storage never depends on a one-cycle route from
@@ -257,11 +251,6 @@ module s32_video (
         .cpu_bsel(cpu_bsel_q), .cpu_rdata(vc_cpu_rdata),
         .cpu_hold(vram_cpu_hold),
         .rnd_re(rnd_re), .rnd_addr(rnd_addr),
-        .pfh_req(pfh_req), .pfh_addr(pfh_addr), .pfh_take(pfh_take),
-        // which walk core owns the grant (used only by an experimental
-        // multi-stream cache)
-        .rnd_sid(row_gnt[1] ? 3'd1 : row_gnt[2] ? 3'd2 : row_gnt[3] ? 3'd3
-               : row_gnt[4] ? 3'd4 : row_gnt[5] ? 3'd5 : 3'd0),
         .rnd_rdata(vc_rnd_rdata), .rnd_hold(vc_rnd_hold),
         .rf_req(vram_rf_req), .rf_addr(vram_rf_addr),
         .rf_cont(vram_rf_cont), .rf_urgent(vram_rf_urg),
@@ -305,7 +294,6 @@ module s32_video (
     // that copy's port B would return undefined data. How that is avoided
     // is described at the mixer tap capture below.
     logic [15:0] pal_q_cpu;
-    logic        pra, prb;
     logic [13:0] paa, pab;
     logic [15:0] prda, prdb;  // driven by the bypass assigns below
     logic        cpu_write_hold;
@@ -320,11 +308,6 @@ module s32_video (
     // through the games' bursts of 150-250 table writes.
     assign cpu_write_hold = cpu_we && sel_pal || cpu_we_q && q_sel_pal;
     assign cen_r = cen_ren && !cpu_write_hold;
-
-    // cen_rv: cen_r plus the VRAM cache stall. Only the older line-ahead
-    // renderers use it; the layer cores here take !rnd_stall in their vr_ok.
-    logic cen_rv;
-    assign cen_rv = cen_r && !rnd_stall;
 
     logic [13:0] paa_e, pab_e;
     assign paa_e = paa;
@@ -380,11 +363,11 @@ module s32_video (
 
     // pal_b: the second mixer tap (blend / second-layer palette), the same
     // shape as pal_a. Port A = CPU write (q_a unused); port B = mixer read.
-    logic [15:0] pal_b_qb, pal_b_qa_nc;
+    logic [15:0] pal_b_qb;
     s32_tdp #(.AW(14), .DW(16), .OREGB(1)) u_pal_b (
         .clk(clk),
         .we_a(q_sel_pal && cpu_we_q), .addr_a(cpu_addr_q[14:1]),
-        .d_a(pal_wdata), .q_a(pal_b_qa_nc),
+        .d_a(pal_wdata), .q_a(),
         .we_b(1'b0), .addr_b(pab_e), .d_b(16'd0), .q_b(pal_b_qb)
     );
 
@@ -490,7 +473,7 @@ module s32_video (
     // drawn from buffers the pattern streamer (below) fills ahead of the
     // beam, so the beam never waits on the tile ROM. Index: 0/1 = NBG0/1
     // zoom, 2/3 = NBG2/3 rowscroll.
-    logic        pfc_vld  [0:3], pfc_done [0:3], pfc_next [0:3];
+    logic        pfc_vld  [0:3], pfc_next [0:3];
     logic [5:0]  pfc_col  [0:3];
     logic [18:0] pfc_addr [0:3];
     logic [5:0]  beam_col [0:3];
@@ -524,7 +507,6 @@ module s32_video (
     // line (names and patterns) into a private row store; the beam then
     // reads from that store. vr_ok = walk grant, no palette write, no cache
     // stall.
-    logic        tl_pix_valid, tl_prefetch_ready;
     logic [10:0] tl_pix;
     s32_text_live u_text_live (
         .clk(clk), .rst(rst),
@@ -534,8 +516,8 @@ module s32_video (
         .vr_ok(row_gnt[0] && cen_r && !rnd_stall),
         .vr_busy(tw_busy), .vr_re(),
         .vr_addr(tw_vaddr), .vr_rdata(vram_q_rnd),
-        .pix(tl_pix), .pix_valid(tl_pix_valid),
-        .prefetch_ready(tl_prefetch_ready)
+        .pix(tl_pix), .pix_valid(),
+        .prefetch_ready()
     );
 
     // The render port belongs to the row-transfer walks: the arbiter grants
@@ -573,8 +555,11 @@ module s32_video (
     logic [1:0]  ps_lay;
     logic [5:0]  ps_col;
     logic [18:0] ps_addr_q;
-    logic [18:0] ps_last_a [0:3];      // per-layer dedup: last served row
-    logic [63:0] ps_last_d [0:3];
+    // ramstyle logic: 332 bits Quartus otherwise puts in 4 M10K (the
+    // same-cycle feed-through it infers keeps them out of MLAB);
+    // docs/corertlcleanup.md B1
+    (* ramstyle = "logic" *) logic [18:0] ps_last_a [0:3];  // per-layer dedup: last served row
+    (* ramstyle = "logic" *) logic [63:0] ps_last_d [0:3];
     logic        ps_last_v [0:3];
     logic        pbw_we;               // pattern-buffer store port
     logic [1:0]  pbw_lay;
@@ -747,7 +732,7 @@ module s32_video (
                 .rom_rdata(pq_use[zli]),
                 .pf_vld(pfc_vld[zli]), .pf_col(pfc_col[zli]),
                 .pf_addr(pfc_addr[zli]), .pf_next(pfc_next[zli]),
-                .pf_done(pfc_done[zli]), .col(beam_col[zli]),
+                .pf_done(), .col(beam_col[zli]),
                 .pix(zl_pix[zli])
             );
         end
@@ -785,7 +770,7 @@ module s32_video (
                 .rom_rdata(pq_use[2 + rli]),
                 .pf_vld(pfc_vld[2 + rli]), .pf_col(pfc_col[2 + rli]),
                 .pf_addr(pfc_addr[2 + rli]), .pf_next(pfc_next[2 + rli]),
-                .pf_done(pfc_done[2 + rli]), .col(beam_col[2 + rli]),
+                .pf_done(), .col(beam_col[2 + rli]),
                 .win_mode(rl_win_mode[rli]),
                 .win_active(rl_win_act[rli]),
                 .win_lo(rl_win_lo[rli]), .win_hi(rl_win_hi[rli]),
@@ -795,7 +780,6 @@ module s32_video (
     endgenerate
 
     // ---- bitmap layer (pixels come from VRAM; no ROM)
-    logic bl_pv;
     logic [13:0] bl_pix;
     s32_bitmap_live u_bml (
         .clk(clk), .rst(rst), .cen_pix(bf_pix), .wide(wide),
@@ -814,8 +798,7 @@ module s32_video (
         .vr_ok(row_gnt[5] && cen_r && !rnd_stall),
         .vr_busy(bw_busy), .vr_re(),
         .vr_addr(bw_vaddr), .vr_rdata(vram_q_rnd),
-        .pf_hint_addr(), .pf_hint_vld(), .pf_hint_take(1'b0),
-        .pix(bl_pix), .pix_valid(bl_pv)
+        .pix(bl_pix), .pix_valid()
     );
 
     // ---- live clip evaluators, at the beam column/line
@@ -1087,8 +1070,8 @@ module s32_video (
         .pix_nbg2(q_n2), .pix_nbg3(q_n3),
         .pix_bitmap(q_bm),
         .pix_sprite(spr_q),
-        .pal_re_a(pra), .pal_addr_a(paa), .pal_rdata_a(prda),
-        .pal_re_b(prb), .pal_addr_b(pab), .pal_rdata_b(prdb),
+        .pal_re_a(), .pal_addr_a(paa), .pal_rdata_a(prda),
+        .pal_re_b(), .pal_addr_b(pab), .pal_rdata_b(prdb),
         .rgb_valid(rgb_valid), .rgb(mix_rgb)
     );
 

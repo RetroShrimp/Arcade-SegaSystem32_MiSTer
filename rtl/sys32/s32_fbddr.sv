@@ -154,7 +154,6 @@ module s32_fbddr #(
     logic [15:0] sh_a;
     logic [3:0]  sh_mask;                     // lanes of sh_a to clear
     logic [63:0] sh_word;
-    logic        sh_word_v;
 
     typedef enum logic [2:0] {
         D_IDLE, D_RD, D_RDW, D_WR, D_SHRD, D_SHW, D_SHM, D_SHWR
@@ -321,7 +320,6 @@ module s32_fbddr #(
             fill      <= 1'b0;
             wsel      <= 1'b0;
             sh_pend   <= 1'b0;
-            sh_word_v <= 1'b0;
             idle_cnt  <= 5'd0;
             rf_seen   <= 1'b0;
             for (i = 0; i < 2; i = i + 1) begin
@@ -377,7 +375,7 @@ module s32_fbddr #(
                 // one assignment per variable (rather than a clear plus a
                 // part-select write)
                 acc_d  <= 64'(fb_wdata) << (16 * w_lane);
-                acc_be <= 64'(2'b11)    << ( 2 * w_lane);
+                acc_be <= 8'(2'b11)     << ( 2 * w_lane);
             end
 
             // ====================================================== FSM
@@ -389,7 +387,6 @@ module s32_fbddr #(
                         dst     <= D_RD;
                     end
                     else if (go && sh_pend && all_quiet && !have_run) begin
-                        sh_word_v <= 1'b0;
                         dst       <= D_SHRD;
                     end
                     else if (go && have_run) begin
@@ -452,7 +449,6 @@ module s32_fbddr #(
                 D_SHW:
                     if (ddr_dout_ready) begin
                         sh_word   <= ddr_dout;           // raw; D_SHM masks it
-                        sh_word_v <= 1'b1;
                         dst       <= D_SHM;
                     end
 

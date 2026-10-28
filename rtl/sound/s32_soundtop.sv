@@ -125,7 +125,7 @@ module s32_soundtop (
         logic signed [16:0] s;
         s = v[24:8];             // >>> 8
         if (s > 17'sd32767)       sat16 = 16'sd32767;
-        else if (s < -17'sd32768) sat16 = -16'sd32768;
+        else if (s < -17'sd32768) sat16 = 16'sh8000;   // -32768
         else                      sat16 = s[15:0];
     endfunction
 

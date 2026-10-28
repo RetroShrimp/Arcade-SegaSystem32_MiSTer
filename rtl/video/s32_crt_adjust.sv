@@ -160,7 +160,7 @@ module s32_crt_adjust #(
     wire rd_ce = active ? rd_tick : ce_pix;
 
     // ---------------- the engine ----------------
-    wire str_hb, str_vb;
+    wire str_hb;
 
     crt_adjust #(
         .VTOTAL    (V_TOTAL),
@@ -183,13 +183,12 @@ module s32_crt_adjust #(
         .vb_in      (vblank_in),      // TRUE vertical blank, not ~de
         .r_out      (r_out), .g_out (g_out), .b_out (b_out),
         .hs_out     (hs_out), .vs_out (vs_out),
-        .hb_out     (str_hb), .vb_out (str_vb),
+        .hb_out     (str_hb), .vb_out (),
         .hs_ref_out (hs_ref)
     );
 
-    // str_vb is the native write-rate blank and is not used: hb_out is
-    // ~pass_q, which the engine already gates with its one-line-late vblank.
-    wire unused_ok = &{1'b0, str_vb};
+    // vb_out (the native write-rate blank) is left open: hb_out is ~pass_q,
+    // which the engine already gates with its one-line-late vblank.
 
     assign de_out = ~str_hb;
     assign ce_out = rd_ce;

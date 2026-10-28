@@ -113,19 +113,18 @@ module v60_pfu (
 
     // ---------------------------------------------- next-state (single)
     // drain/flush and append compose into ONE count/head/base update.
-    logic [4:0]  drain_amt;
     logic [4:0]  count_pd;             // count after drain, before append
     logic [3:0]  head_pd;
     logic [23:0] base_pd;
     always_comb begin
         if (delta_u == 24'd0) begin
-            drain_amt = 5'd0;  count_pd = count;
+            count_pd = count;
             head_pd = head;    base_pd = base;
         end else if (in_range) begin
-            drain_amt = delta_u[4:0]; count_pd = count - delta_u[4:0];
+            count_pd = count - delta_u[4:0];
             head_pd = (head + delta_u[3:0]) & 4'hF; base_pd = pc;
         end else begin                 // flush
-            drain_amt = count; count_pd = 5'd0;
+            count_pd = 5'd0;
             head_pd = 4'd0;    base_pd = pc;
         end
     end

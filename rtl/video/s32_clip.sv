@@ -46,19 +46,20 @@ module s32_clip (
     always_comb begin
         in_win = 1'b0;
         for (int w = 0; w < 4; w++) begin
-            logic [9:0] l, r;
-            logic [8:0] t, b;
+            // every temporary is assigned on every path (l2/t2 are the
+            // flipped edges, computed whether or not they are used), so
+            // the block is latch-free in lint as well as in synthesis
+            logic [9:0] l, r, l2;
+            logic [8:0] t, b, t2;
             l = {1'b0, win_l[w][8:0]};
             r = {1'b0, win_r[w][8:0]} + 10'd1;
             t = {1'b0, win_t[w][7:0]};
             b = {1'b0, win_b[w][7:0]} + 9'd1;
+            l2 = (sw >= r) ? sw - r : 10'd0;
+            t2 = (SH >= b) ? SH - b : 9'd0;
             if (gflip) begin
-                logic [9:0] l2;
-                logic [8:0] t2;
-                l2 = (sw >= r) ? sw - r : 10'd0;
                 r  = (sw >= l) ? sw - l : 10'd0;
                 l  = l2;
-                t2 = (SH >= b) ? SH - b : 9'd0;
                 b  = (SH >= t) ? SH - t : 9'd0;
                 t  = t2;
             end

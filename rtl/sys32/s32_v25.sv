@@ -136,6 +136,10 @@ module s32_v25 (
     logic [15:0] reg16 [0:7];    // AW CW DW BW SP BP IX(SI) IY(DI)
     logic [15:0] sreg  [0:3];    // ES CS SS DS (8086 sreg encoding)
     logic [15:0] ip;             // EXU: IP of the next byte decoded
+    // fl_s is kept up to date by every flag writer, but no instruction in
+    // the implemented subset reads it yet (no JS/JNS/PUSHF in the programs
+    // the core runs), so synthesis prunes it. Kept so the next branch on S
+    // does not have to rebuild the flag logic.
     logic        fl_z, fl_s, fl_c;
 
     localparam AX = 3'd0, CX = 3'd1, DX = 3'd2, BX = 3'd3,
@@ -292,6 +296,8 @@ module s32_v25 (
     assign lin_ea = ({4'd0, sreg[ea_seg]} << 4) + {4'd0, ea_off};
     wire  [19:0] lin_sp = ({4'd0, sreg[SEG_SS]} << 4) + {4'd0, reg16[SP]};
 
+    // gr: block-local ALU result, assigned with '=' and consumed in the same
+    // clocked pass (never state; Verilator BLKSEQ is benign here)
     logic [17:0] gr;
     logic [15:0] pushv;
 
@@ -372,7 +378,7 @@ module s32_v25 (
     endfunction
 
     // ------------------------------------------------ prefetch queue
-    logic [7:0]  q [0:7];        // 6 used; 3-bit pointers wrap at 8
+    (* ramstyle = "logic" *) logic [7:0]  q [0:7];  // 6 used; 3-bit pointers wrap at 8 (64 bits: not an M10K)
     logic [2:0]  q_rd, q_wr;
     logic [2:0]  q_cnt;          // 0..6
     logic [15:0] f_ip;           // BIU: IP of the next byte to prefetch

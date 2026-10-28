@@ -74,13 +74,8 @@ module s32_vramcache #(
     // ---- render serial port (B): the row-transfer walk
     input  logic         rnd_re,       // read strobe (1 word/clk walk)
     input  logic [15:0]  rnd_addr,     // WORD address
-    input  logic [2:0]   rnd_sid,      // walk core id (unused: one stream)
     output logic [15:0]  rnd_rdata,
     output logic         rnd_hold,     // 1 => stall the WALK (never the beam)
-    // external prefetch hint and its ack (unused in this build: tied 0)
-    input  logic         pfh_req,
-    input  logic [15:0]  pfh_addr,
-    output logic         pfh_take,
 
     // ---- SDRAM burst-read client (8 x 16 bits = 16 bytes per burst).
     // Holding rf_cont high asks the controller to keep the row open and read
@@ -231,10 +226,14 @@ module s32_vramcache #(
 
     localparam int PWQ_N = 16;
     logic [15:0] pwq_a [0:PWQ_N-1];
-    logic [15:0] pwq_d [0:PWQ_N-1];
-    logic [1:0]  pwq_b [0:PWQ_N-1];
+    // ramstyle logic on d/b/w: the queue is searched across every entry
+    // (pwq_m_*, the merge at capture), so it is registers anyway; without
+    // the attribute Quartus also built M10K copies of d/b/w for the one
+    // drain read, 4 blocks for 320 bits (docs/corertlcleanup.md B1)
+    (* ramstyle = "logic" *) logic [15:0] pwq_d [0:PWQ_N-1];
+    (* ramstyle = "logic" *) logic [1:0]  pwq_b [0:PWQ_N-1];
     logic        pwq_v [0:PWQ_N-1];
-    logic [WAYS-1:0] pwq_w [0:PWQ_N-1];  // ways the line was resident in at
+    (* ramstyle = "logic" *) logic [WAYS-1:0] pwq_w [0:PWQ_N-1];  // ways the line was resident in at
                                       // the accept capture: the drain UPDATES
                                       // those ways in place (write-
                                       // update; the fill gating pins
@@ -393,24 +392,15 @@ module s32_vramcache #(
     // line and touches the cache only at line boundaries (every 8 words),
     // like the real 315-5387's serial port.
     typedef enum logic [1:0] {R_STREAM, R_LOAD, R_FILL} rst_e;
-    // one row-stream context
-    localparam int   NS = 1;
-    wire [2:0]       sid = (NS == 1) ? 3'd0 : rnd_sid;
-    rst_e            rstt_a   [0:NS-1];
-    logic [127:0]    rline_a  [0:NS-1];
-    logic [TAGW-1:0] rltag_a  [0:NS-1];
-    logic [LB-1:0]   rlidx_a  [0:NS-1];
-    logic            rlval_a  [0:NS-1];
-    logic [12:0]     rladdr_a [0:NS-1];
-    logic [15:0]     raddr_a  [0:NS-1];
-    // read-side views of the CURRENT stream (writes target the _a arrays)
-    rst_e            rstt;     always_comb rstt     = rstt_a[sid];
-    logic [127:0]    rline;    always_comb rline    = rline_a[sid];
-    logic [TAGW-1:0] rltag;    always_comb rltag    = rltag_a[sid];
-    logic [LB-1:0]   rlidx;    always_comb rlidx    = rlidx_a[sid];
-    logic            rlval;    always_comb rlval    = rlval_a[sid];
-    logic [12:0]     rladdr;   always_comb rladdr   = rladdr_a[sid];
-    logic [15:0]     r_addr_l; always_comb r_addr_l = raddr_a[sid];
+    // the row-stream context (one; the per-walk-core contexts of E6_MSTREAM
+    // were retired 2026-10-28, docs/cleanup.md #7)
+    rst_e            rstt;
+    logic [127:0]    rline;
+    logic [TAGW-1:0] rltag;
+    logic [LB-1:0]   rlidx;
+    logic            rlval;
+    logic [12:0]     rladdr;
+    logic [15:0]     r_addr_l;
 
     logic [15:0]     r_a;
     assign r_a = (rstt==R_STREAM) ? rnd_addr : r_addr_l;
@@ -531,11 +521,9 @@ module s32_vramcache #(
     // not clear latches: a refill carries the same data, and a fill with
     // newer data always follows the write's own cwr_stb. A boundary branch
     // that moves a latch on the same edge applies the clear itself.
-    logic rl_whit, nx_whit, pv0_whit, pv1_whit;
+    logic rl_whit, nx_whit;
     assign rl_whit  = cwr_stb && rlval && (cwr_row == rladdr);
     assign nx_whit  = cwr_stb && nxval && (cwr_row == nxaddr);
-    assign pv0_whit = pv_whitv[0];
-    assign pv1_whit = pv_whitv[(PVN > 1) ? 1 : 0];
     // capture guards: an array read used at edge T was issued at edge T-1.
     // A write to the same set at either edge makes it stale (or undefined
     // on the FPGA). The registered flags cover T-1, the inline terms T; a
@@ -545,8 +533,7 @@ module s32_vramcache #(
     // R_LOAD retarget settle: the cycle after a retarget, qb still holds
     // the old line's read and could false-hit, so it is skipped. (A normal
     // R_LOAD entry issued its read at the boundary and needs no settle.)
-    logic rl_ret_a [0:NS-1];
-    logic rl_ret_q; always_comb rl_ret_q = rl_ret_a[sid];
+    logic rl_ret_q;
     // serve-on-R_LOAD = the FSM capture guards, plus the live request must
     // still be the parked one (rnd_addr == r_addr_l): after a hand-over the
     // next walk core may already present a different word. A mismatch
@@ -560,22 +547,17 @@ module s32_vramcache #(
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            for (int t = 0; t < NS; t++) begin
-                rstt_a[t] <= R_STREAM; rlval_a[t] <= 1'b0;
-            end
+            rstt <= R_STREAM; rlval <= 1'b0;
             rnd_need_fill <= 1'b0;
             nxval <= 1'b0; nx_ld_q <= 1'b0;
             for (int i = 0; i < PVN; i++) pvval[i] <= 1'b0;
             pv_lru <= '0;
             nx_wcol_q <= 1'b0; rb_wcol_q <= 1'b0;
-            for (int t = 0; t < NS; t++) rl_ret_a[t] <= 1'b0;
+            rl_ret_q <= 1'b0;
         end else begin
             // latch invalidation first: a branch below that moves a latch
             // on this edge sets its own validity
-            for (int t = 0; t < NS; t++)
-                if (cwr_stb && rlval_a[t] && (cwr_row == rladdr_a[t]))
-                    rlval_a[t] <= 1'b0;
-            if (rl_whit)  rlval_a[sid] <= 1'b0;
+            if (rl_whit)  rlval <= 1'b0;
             if (nx_whit)  nxval <= 1'b0;
             for (int i = 0; i < PVN; i++) if (pv_whitv[i]) pvval[i] <= 1'b0;
             // capture-collision pipeline flags (read edge = T-1 of consume)
@@ -607,10 +589,10 @@ module s32_vramcache #(
                             // slot. A write superseding either copy THIS
                             // edge lands in the incoming validity (whit
                             // terms = the old identities being moved).
-                            rline_a[sid] <= rline_nx;
-                            rlidx_a[sid] <= nxidx; rltag_a[sid] <= nxtag;
-                            rlval_a[sid] <= !nx_whit;
-                            rladdr_a[sid] <= nxaddr;
+                            rline <= rline_nx;
+                            rlidx <= nxidx; rltag <= nxtag;
+                            rlval <= !nx_whit;
+                            rladdr <= nxaddr;
                             nxval <= 1'b0;
                             rline_pv[pv_lru] <= rline;
                             pvidx[pv_lru] <= rlidx;
@@ -623,15 +605,15 @@ module s32_vramcache #(
                             // free boundary: EXCHANGE with the hit entry
                             // (A/B interleave ping-pong); the untouched
                             // entry becomes the next retire victim
-                            rline_a[sid] <= rline_pv[pvk]; rlidx_a[sid] <= pvidx[pvk];
-                            rltag_a[sid] <= pvtag[pvk]; rladdr_a[sid] <= pvaddr[pvk];
-                            rlval_a[sid] <= !pv_whitv[pvk];
+                            rline <= rline_pv[pvk]; rlidx <= pvidx[pvk];
+                            rltag <= pvtag[pvk]; rladdr <= pvaddr[pvk];
+                            rlval <= !pv_whitv[pvk];
                             rline_pv[pvk] <= rline; pvidx[pvk] <= rlidx;
                             pvtag[pvk] <= rltag; pvaddr[pvk] <= rladdr;
                             pvval[pvk] <= rlval && !rl_whit;
                             pv_lru <= (pvk == PVB'(PVN-1)) ? '0 : pvk + PVB'(1);
                         end else begin
-                            raddr_a[sid] <= rnd_addr; rstt_a[sid] <= R_LOAD;
+                            r_addr_l <= rnd_addr; rstt <= R_LOAD;
                         end
                     end
                 R_LOAD:                                // qb* = way reads
@@ -641,13 +623,13 @@ module s32_vramcache #(
                         // retarget to the live request and re-read.
                         // Without this the FSM would wait forever for an
                         // address match that never comes.
-                        raddr_a[sid] <= rnd_addr;
-                        rl_ret_a[sid] <= 1'b1;
+                        r_addr_l <= rnd_addr;
+                        rl_ret_q <= 1'b1;
                     end else if (rl_ret_q) begin
                         // settle: the re-steered array read launches this
                         // cycle (r_addr_l just updated); qb is still the
                         // old line's — no hit/fill decision on it
-                        rl_ret_a[sid] <= 1'b0;
+                        rl_ret_q <= 1'b0;
                     end else if (!rb_sid_ok) begin
                         // qb belongs to another stream: settle, re-read
                     end else if (rb_h0 || rb_h1) begin
@@ -656,10 +638,10 @@ module s32_vramcache #(
                             // hit clean: the word is being SERVED this
                             // cycle by the rnd_rdata R_LOAD arm (serve-on-
                             // R_LOAD) while the row lands in the latch
-                            rline_a[sid] <= qb_sel;
-                            rlidx_a[sid] <= req_line; rltag_a[sid] <= req_tag;
-                            rladdr_a[sid] <= r_addr_l[15:3];
-                            rlval_a[sid] <= 1'b1; rstt_a[sid] <= R_STREAM;
+                            rline <= qb_sel;
+                            rlidx <= req_line; rltag <= req_tag;
+                            rladdr <= r_addr_l[15:3];
+                            rlval <= 1'b1; rstt <= R_STREAM;
                             rline_pv[pv_lru] <= rline;
                             pvidx[pv_lru] <= rlidx;
                             pvtag[pv_lru] <= rltag;
@@ -672,13 +654,13 @@ module s32_vramcache #(
                         // stale; wait for the fresh read (a line that was
                         // just invalidated then misses and fills)
                     end else begin
-                        rnd_need_fill <= 1'b1; rstt_a[sid] <= R_FILL;
+                        rnd_need_fill <= 1'b1; rstt <= R_FILL;
                     end
                 R_FILL:
                     if (rnd_fill_done) begin
-                        rnd_need_fill <= 1'b0; rstt_a[sid] <= R_LOAD;  // re-read cache
+                        rnd_need_fill <= 1'b0; rstt <= R_LOAD;  // re-read cache
                     end
-                default: rstt_a[sid] <= R_STREAM;
+                default: rstt <= R_STREAM;
             endcase
             // (the write supersede lives at the TOP of the block — the
             // whit terms also cover rline and non-resident writes)
@@ -716,7 +698,9 @@ module s32_vramcache #(
     logic [15:0] pf_ran;             // this gap: slot's prediction fetched
     logic [3:0]  pf_slot;            // slot that issued pf_addr (a span
                                      // can run into the next page)
-    logic [12:0] fs_start  [0:15];   // frame-first walk's spans (snapshot)
+    // fs_*/vli_*: read and written at one index in one block; ramstyle
+    // logic keeps each out of a whole M10K (docs/corertlcleanup.md B1)
+    (* ramstyle = "logic" *) logic [12:0] fs_start  [0:15];   // frame-first walk's spans (snapshot)
     logic [2:0]  fs_len    [0:15];
     logic [15:0] fs_v;
     // Last span issued per page: an unchanged span is not issued again.
@@ -724,8 +708,8 @@ module s32_vramcache #(
     // unrelated live line, so repeated predictions would churn the cache.
     // A span is issued again only when its target moved (stride advance)
     // or a demand miss in its page shows something is missing.
-    logic [12:0] vli_start [0:15];
-    logic [2:0]  vli_len   [0:15];
+    (* ramstyle = "logic" *) logic [12:0] vli_start [0:15];
+    (* ramstyle = "logic" *) logic [2:0]  vli_len   [0:15];
     logic [15:0] vli_v;
     logic        ff_learn;           // this walk is the frame's first
     logic        vpp_fs;             // scan source: frame snapshot
@@ -738,7 +722,6 @@ module s32_vramcache #(
     always_ff @(posedge clk) begin
         if (rst) begin
             pf_need <= 1'b0; vpp_v <= '0; vpp_seen <= '0; fs_v <= '0;
-            pfh_take <= 1'b0;
             pf_ran <= '0; ff_learn <= 1'b0; vpp_fs <= 1'b0;
             vpp_scan <= 5'd16; vpp_sub <= 3'd0; vps_gap <= 0;
             vpp_live <= '0; vpp_conf <= '0; vli_v <= '0;
@@ -746,7 +729,6 @@ module s32_vramcache #(
                 vpp_len[p] <= 3'd0; vpp_run[p] <= 3'd0;
             end
         end else begin
-            pfh_take <= 1'b0;
             if (rnd_re) vpp_live[rnd_addr[15:12]] <= 1'b1;
             if (rnd_re) vps_gap <= 0;
             else        vps_gap <= vps_gap + 1;
@@ -864,9 +846,6 @@ module s32_vramcache #(
     mst_e mst;
     logic rf_urg;                 // current rf grant is a render demand
     assign rf_urgent = rf_req && rf_urg;
-    logic [127:0] vfy_data;
-    logic [1:0]   vfy_cnt;
-    localparam logic [1:0] VFY_MAX = 2'd3;
     logic [1:0]  serve_kind;      // 0=cpu 1=render-demand 2=prefetch
     logic [15:0] fill_a;
 
@@ -1005,7 +984,7 @@ module s32_vramcache #(
                             rnd_fill_done <= 1'b1;
                         else begin
                             serve_kind <= 2'd1; fill_a <= r_addr_l;
-                            rf_addr <= VW + {9'd0, r_addr_l[15:3], 3'b000};
+                            rf_addr <= VW + {8'd0, r_addr_l[15:3], 3'b000};
                             rf_req  <= 1'b1; rf_urg <= 1'b1;
                             m_chain <= CHAIN_EN; rf_cont <= CHAIN_EN;
                             ch_base <= {r_addr_l[15:6], 6'b0};
@@ -1019,7 +998,7 @@ module s32_vramcache #(
                     end else if (cpu_need_fill && !cpu_fill_done
                                  && !pwq_m_cline) begin
                         serve_kind <= 2'd0; fill_a <= c_addr_l;
-                        rf_addr <= VW + {9'd0, c_addr_l[15:3], 3'b000};
+                        rf_addr <= VW + {8'd0, c_addr_l[15:3], 3'b000};
                         rf_req  <= 1'b1; rf_urg <= 1'b0;
                         m_chain <= 1'b0; rf_cont <= 1'b0;
                         mst <= M_FILL;
@@ -1029,14 +1008,14 @@ module s32_vramcache #(
                         // (and with it any walk waiting on pwq_m_rword).
                         // A fill blocked above by a queued write falls
                         // through to here, so it always makes progress.
-                        wr_addr <= VW + {9'd0, pwq_a[pwq_rp[3:0]]};
+                        wr_addr <= VW + {8'd0, pwq_a[pwq_rp[3:0]]};
                         wr_data <= pwq_d[pwq_rp[3:0]];
                         wr_dqm  <= ~pwq_b[pwq_rp[3:0]];
                         wr_req  <= 1'b1; mst <= M_WR;
                     end else if (pf_need && !pf_fill_done && !pwq_m_pline) begin
                         // predicted span: a full-row background chain
                         serve_kind <= 2'd2; fill_a <= pf_addr;
-                        rf_addr <= VW + {9'd0, pf_addr[15:3], 3'b000};
+                        rf_addr <= VW + {8'd0, pf_addr[15:3], 3'b000};
                         rf_req  <= 1'b1; rf_urg <= 1'b0;
                         m_chain <= CHAIN_EN; rf_cont <= CHAIN_EN;
                         ch_base <= {pf_addr[15:6], 6'b0};
@@ -1051,7 +1030,7 @@ module s32_vramcache #(
                     if (m_chain && rf_ack) begin
                         // line ch_iss issued; present the next one
                         ch_iss  <= ch_iss + 4'd1;
-                        rf_addr <= VW + {9'd0,
+                        rf_addr <= VW + {8'd0,
                                    f_chaddr(ch_iss + 4'd1, ch_base, ch_start)};
                         if (ch_iss == 4'd7) rf_cont <= 1'b0; // row complete
                     end

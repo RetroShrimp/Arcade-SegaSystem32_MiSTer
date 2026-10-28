@@ -177,7 +177,6 @@ pll pll
 // path runs only while rst_core is asserted).
 wire reset_req = RESET | status[0] | buttons[1];
 
-
 reg  rst_ctrl_r = 1;
 always @(posedge clk_sys) rst_ctrl_r <= ~pll_locked | RESET;
 
@@ -318,7 +317,6 @@ s32_ddrload ddrload (
 
 reg dl_q = 0;
 always @(posedge clk_sys) dl_q <= ioctl_download;
-
 
 // ---- NVRAM file (.mra <nvram index="2" size="8320">):
 //   0-127     93C46 EEPROM (64 x 16 bits, little-endian bytes)

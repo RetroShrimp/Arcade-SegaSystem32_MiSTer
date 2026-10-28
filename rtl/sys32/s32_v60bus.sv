@@ -205,7 +205,6 @@ module s32_v60bus (
     assign wram_qb = {wram_qb_l[3], wram_qb_l[2],
                       wram_qb_l[1], wram_qb_l[0]};
 
-
     // ------------------------------------------------ sprite list RAM
     // a 16-bit "port" so the serializer treats it like the video and
     // sprite-control ports
@@ -285,7 +284,7 @@ module s32_v60bus (
     // "Memory timing": 0 = moderate, 1 = short, 2 = moderate, 3 = long wait).
     // How many clocks each setting means is not documented, so the values
     // are stored and read back but add no wait states (as in MAME).
-    logic [1:0] etmg [0:15];
+    (* ramstyle = "logic" *) logic [1:0] etmg [0:15];  // 32 bits: not an M10K (corertlcleanup B1)
     initial begin
         // s32tech default: 00 00 03 02 02 00 00 02 00 00 00 00 03 02 00 00
         etmg[0]='d0; etmg[1]='d0; etmg[2]='d3; etmg[3]='d2;
@@ -458,7 +457,6 @@ module s32_v60bus (
             2'd3: wram_bytes = wram_pair[55:24];
         endcase
     end
-
 
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
@@ -872,6 +870,5 @@ module s32_v60bus (
             endcase
         end
     end
-
 
 endmodule

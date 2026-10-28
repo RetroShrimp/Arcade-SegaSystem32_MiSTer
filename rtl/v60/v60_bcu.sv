@@ -198,8 +198,8 @@ module v60_bcu (
         logic [31:0] r;
         begin
             r = 32'h0000_0000;
-            if (sz == 2'd2) r[15:0] = w >> (8 * off);
-            else            r[7:0]  = w >> (8 * off);
+            if (sz == 2'd2) r[15:0] = 16'(w >> (8 * off));
+            else            r[7:0]  = 8'(w >> (8 * off));
             wslice = r;
         end
     endfunction

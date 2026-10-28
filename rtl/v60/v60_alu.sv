@@ -101,9 +101,9 @@ module v60_alu (
             // addc/subc, so the pre-carry-op expressions are unchanged)
             unique case (width)
                 2'd0:    cy = is_sub ? ({1'b0,x[7:0]}  < ({1'b0,y[7:0]}  + {8'd0,cin}))
-                                     : (({1'b0,x[7:0]}  + {1'b0,y[7:0]}  + {8'd0,cin})  >> 8)  & 1'b1;
+                                     : 1'((({1'b0,x[7:0]}  + {1'b0,y[7:0]}  + {8'd0,cin})  >> 8));
                 2'd1:    cy = is_sub ? ({1'b0,x[15:0]} < ({1'b0,y[15:0]} + {16'd0,cin}))
-                                     : (({1'b0,x[15:0]} + {1'b0,y[15:0]} + {16'd0,cin}) >> 16) & 1'b1;
+                                     : 1'((({1'b0,x[15:0]} + {1'b0,y[15:0]} + {16'd0,cin}) >> 16));
                 default: cy = is_sub ? ({1'b0,x} < ({1'b0,y} + {32'd0,cin}))
                                      : sum[32];
             endcase

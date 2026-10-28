@@ -82,6 +82,10 @@ module v60_muldiv (
     // combinational helpers
     logic [31:0] au, bu;
     logic        div0, ov_case;
+    // sh/diff/quo/remv/r/prod/sres are block-local temporaries: the clocked
+    // block below assigns them with '=' and consumes them in the same pass,
+    // so they never hold state between clocks (Verilator BLKSEQ is benign
+    // here; corestep checks every mul/div/rem result and flag)
     logic [63:0] sh, prod, sres;
     logic [33:0] diff;
     logic [31:0] quo, r, remv;

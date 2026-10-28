@@ -19,6 +19,8 @@ module v60 (
 
     output logic [31:0]  fetch_pc,
     input  logic [111:0] fetch_bytes,
+    output logic [5:0]   fetch_len,    // decoded length of the instruction
+                                       // at fetch_bytes (s32_sys fetch_hold)
 
     output logic         mem_re,
     output logic         mem_we,
@@ -89,17 +91,31 @@ module v60 (
     logic [4:0]  l1_q, l2_q;
 
     // ---------------------------------------------------------------- decode
+    // ONE length decoder, on the fetch window. Its length is also fetch_len,
+    // which s32_sys compares with the prefetch queue's fill (fetch_hold), and
+    // its outputs are registered together with iw at the S_FETCH latch, so
+    // S_DECODE sees exactly the decode of iw it saw when this decoder sat on
+    // iw. Until 2026-10-28 s32_sys ran a second copy on the same window for
+    // the length alone (~210 ALMs; docs/corertlcleanup.md C4).
+    logic [5:0] f_ilen;
+    logic [3:0] f_ftype;
+    logic [1:0] f_s1, f_s2;
+    logic [4:0] f_am1l, f_am2l;
+    logic       f_valid;
+
+    v60_ldec u_ldec (
+        .bytes_in(fetch_bytes), .length(f_ilen), .ftype(f_ftype),
+        .opsize1(f_s1), .opsize2(f_s2), .am1_len(f_am1l), .am2_len(f_am2l),
+        .valid(f_valid)
+    );
+    assign fetch_len = f_ilen;
+
+    // decode(iw), latched with iw in S_FETCH
     logic [5:0] ilen;
     logic [3:0] ftype;
     logic [1:0] s1, s2;
     logic [4:0] am1l, am2l;
     logic       ldec_valid;
-
-    v60_ldec u_ldec (
-        .bytes_in(iw), .length(ilen), .ftype(ftype),
-        .opsize1(s1), .opsize2(s2), .am1_len(am1l), .am2_len(am2l),
-        .valid(ldec_valid)
-    );
 
     logic [7:0] b0, b1;
     assign b0 = iw[111:104];
@@ -324,7 +340,7 @@ module v60 (
         .flags_in(psw[3:0]), .result(sh_res), .flags_out(sh_fo)
     );
 
-    logic        md_start, md_busy, md_done;
+    logic        md_start, md_busy;
     logic [31:0] md_res;
     logic [3:0]  md_fo;
 
@@ -356,7 +372,7 @@ module v60 (
         // has the high dword on mem_rdata (read issued in S_DVX_RD)
         .a_hi(op2_isreg ? rd_a : mem_rdata), .mode_dvx(is_dvx_op),
         .mode_rem(exec_q == 8'd56 || exec_q == 8'd57),
-        .busy(md_busy), .done(md_done),
+        .busy(md_busy), .done(),
         .result(md_res), .rem_out(md_rem), .flags_out(md_fo)
     );
 
@@ -917,11 +933,10 @@ module v60 (
     assign next_seq_pc = pc + {26'd0, len_q};
 
     // writeback helper values
-    logic       wb_isreg, wb_ismem;
+    logic       wb_isreg;
     logic [4:0] wb_reg;
     logic [31:0] wb_old;
     assign wb_isreg = wb_to_op1 ? op1_isreg : op2_isreg;
-    assign wb_ismem = wb_to_op1 ? op1_ismem : op2_ismem;
     assign wb_reg   = wb_to_op1 ? op1_reg_q : op2_reg_q;
     assign wb_old   = wb_to_op1 ? op1_val   : op2_val;
 
@@ -974,6 +989,10 @@ module v60 (
                         state <= S_XCP_SBR;
                     end else begin
                         iw <= fetch_bytes;
+                        ilen <= f_ilen;   ftype <= f_ftype;
+                        s1 <= f_s1;       s2 <= f_s2;
+                        am1l <= f_am1l;   am2l <= f_am2l;
+                        ldec_valid <= f_valid;
                         state <= S_DECODE;
                     end
                 end

@@ -95,7 +95,6 @@ module s32_sprite_top (
     wstate_e wst;
 
     logic        eng_start, eng_busy, eng_abort;
-    logic        er_pend;              // erase after swap
     logic [8:0]  er_x;
     logic [7:0]  er_y;
     logic [8:0]  er_w;
@@ -271,7 +270,6 @@ module s32_sprite_top (
             l08 <= 2'd0; l0a <= 2'd0; l0c <= 1'b0;
             shown <= 1'b0;
             wst <= W_IDLE;
-            er_pend <= 1'b0;
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
             restart_pend <= 1'b0;
@@ -296,7 +294,6 @@ module s32_sprite_top (
                 // engine honors abort before start, so a render that needs
                 // no erase starts on the next cycle.
                 if (eng_busy) eng_abort <= 1'b1;
-                er_pend <= trig_erase_hidden;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
                 er_w <= r0c ? 9'd415 : 9'd319;
@@ -316,7 +313,6 @@ module s32_sprite_top (
                 // is never shown). The engine drops busy during the
                 // erase, well before eng_start.
                 eng_abort <= 1'b1;
-                er_pend <= 1'b0;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
                 er_w <= r0c ? 9'd415 : 9'd319;
@@ -327,7 +323,6 @@ module s32_sprite_top (
                 er_y <= 8'd0;
                 er_w <= r0c ? 9'd415 : 9'd319;
                 er_disp <= 1'b1;
-                er_pend <= 1'b0;
                 wst <= W_ERASE;
             end
 

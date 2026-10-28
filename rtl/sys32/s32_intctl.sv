@@ -51,7 +51,6 @@ module s32_intctl (
     // CPU interface
     output logic        irq,          // level: any pending unmasked vector
     output logic [2:0]  irq_vector,   // lowest pending unmasked vector (0-4)
-    input  logic        irq_ack,      // CPU acknowledged (entry taken)
 
     // Z80-side interrupt trigger (offsets C-F touched)
     output logic        z80_int_pulse

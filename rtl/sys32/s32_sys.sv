@@ -219,17 +219,13 @@ module s32_sys (
         .pf_req(pf_req), .pf_addr(pf_addr), .pf_grant(pf_grant),
         .pf_rdata(pf_rdata), .pf_done(pf_done)
     );
-    // Length decode on the presented window: the core proceeds (fetch_hold
-    // low) only once the queue holds the whole instruction. A length decoded
-    // from a partly filled window is still valid if it fits in fq_count,
-    // because then every byte it looked at was valid. Unknown encodings
-    // fall through to the core's own trap.
+    // Length decode on the presented window (the core's own decoder, see
+    // v60.sv fetch_len): the core proceeds (fetch_hold low) only once the
+    // queue holds the whole instruction. A length decoded from a partly
+    // filled window is still valid if it fits in fq_count, because then
+    // every byte it looked at was valid. Unknown encodings fall through to
+    // the core's own trap.
     logic [5:0] live_len;
-    v60_ldec u_flen (
-        .bytes_in(v_fetch_bytes), .length(live_len),
-        .ftype(), .opsize1(), .opsize2(),
-        .am1_len(), .am2_len(), .valid()
-    );
     assign fetch_hold = ({1'b0, fq_count} < live_len);
 
     // Fetch ROM adapter: the bus fabric drives romf_pc and reads back the
@@ -262,6 +258,7 @@ module s32_sys (
     v60 u_v60 (
         .clk(clk), .rst(rst),
         .fetch_pc(fetch_pc), .fetch_bytes(v_fetch_bytes),
+        .fetch_len(live_len),
         .mem_re(mem_re), .mem_we(mem_we), .mem_addr(mem_addr),
         .mem_wdata(mem_wdata), .mem_size(mem_size),
         .mem_rdata(mem_rdata),
@@ -396,7 +393,7 @@ module s32_sys (
         .ev_vblank_in(ev_vbin), .ev_vblank_out(ev_vbout),
         .ev_z80_comm(v60_irq_pulse),
         .cen_timer_a(cen_ta), .cen_timer_b(cen_tb),
-        .irq(irq), .irq_vector(irq_vector), .irq_ack(1'b0),
+        .irq(irq), .irq_vector(irq_vector),
         .z80_int_pulse(z80_int_pulse)
     );
 
@@ -533,7 +530,13 @@ module s32_sys (
     // sound_reset). CNT is 0 after reset, so the whole sound section stays
     // in reset until the game releases it, and a sound reset issued by the
     // game (test mode, soft reset) resets it again.
-    wire snd_rst = rst | ~io_cnt[2];
+    // Registered: the OR of two registers can glitch when both change on
+    // one edge, and this net reaches tv80s's ASYNCHRONOUS reset, where a
+    // glitch resets the Z80 on silicon and in no simulation (Verilator
+    // SYNCASYNCNET; docs/corertlcleanup.md A1). Assertion and release move
+    // by one clk_sys, against a Z80 that steps on cen_z80.
+    logic snd_rst = 1'b1;
+    always_ff @(posedge clk) snd_rst <= rst | ~io_cnt[2];
     s32_soundtop u_snd (
         .clk(clk), .rst(snd_rst),
         .cen_z80(cen_z80 && !zrom_hold), .cen_fm(cen_z80),

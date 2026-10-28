@@ -193,9 +193,6 @@ module s32_pcm (
     logic wave_cpu_wr;
     assign wave_cpu_wr = sel && we && addr[12];
 
-    // park: hold the engine during CPU sample loads (a test option; off)
-    wire park = 1'b0;
-
     // registered, to keep mix_ch -> pan/env muxes -> multiply ->
     // accumulate off the critical path. The FSM sets
     // mix_ch at least two edges before P_SAMPLE consumes lv/rv, so a
@@ -218,13 +215,8 @@ module s32_pcm (
         mix_wb <= 1'b0;
         if (rst) begin
             pst <= P_IDLE;
-            smp_prev_l <= 16'd0; smp_prev_r <= 16'd0;
             smp_cur_l <= 16'd0;  smp_cur_r <= 16'd0;
             wq_wait <= 1'b0;
-        end else if (park) begin
-            // parked (see park above): the engine holds its state, and a
-            // tick that arrives meanwhile is skipped
-            wq_wait <= 1'b1;   // re-settle the OREGB read after resuming
         end else begin
             unique case (pst)
                 P_IDLE: if (tick) begin
@@ -237,7 +229,6 @@ module s32_pcm (
                         pst <= P_FETCH;
                     end else begin
                         // MAME: disabled chip streams silence
-                        smp_prev_l <= 16'd0; smp_prev_r <= 16'd0;
                         smp_cur_l <= 16'd0;  smp_cur_r <= 16'd0;
                     end
                 end
@@ -312,8 +303,6 @@ module s32_pcm (
 
                 P_DONE: begin
                     // RF5C68: 10-bit output (mask low 6 bits), clamp
-                    smp_prev_l <= smp_cur_l;
-                    smp_prev_r <= smp_cur_r;
                     smp_cur_l <= clamp10(acc_l);
                     smp_cur_r <= clamp10(acc_r);
                     pst <= P_IDLE;
@@ -328,7 +317,7 @@ module s32_pcm (
     // The engine produces one sample per tick (32.552 kHz) and holds it
     // until the next tick, as the RF5C68 presents it. The board's LC7881 DAC
     // and op-amp filter (schematic sheets 8 and 9) are not modelled.
-    logic signed [15:0] smp_prev_l, smp_prev_r, smp_cur_l, smp_cur_r;
+    logic signed [15:0] smp_cur_l, smp_cur_r;
     always_comb begin
         out_l = smp_cur_l;
         out_r = smp_cur_r;
@@ -342,7 +331,7 @@ module s32_pcm (
         logic signed [21:0] m;
         m = v & ~22'sd63;
         if (m > 22'sd32767)       clamp10 = 16'sd32767;
-        else if (m < -22'sd32768) clamp10 = -16'sd32768;
+        else if (m < -22'sd32768) clamp10 = 16'sh8000;   // -32768
         else                      clamp10 = m[15:0];
     endfunction
 

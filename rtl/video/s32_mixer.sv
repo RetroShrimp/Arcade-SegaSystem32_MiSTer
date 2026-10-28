@@ -189,6 +189,7 @@ module s32_mixer (
     always_comb begin
         layctl_t tmp [0:6];
         layctl_t t;
+        t = cfg[0];                    // swap temporary: defined on every path
         for (int i = 0; i < 7; i++) tmp[i] = cfg[i];
         // descending by {active, effpri}: active layers first, higher
         // effective priority first, inactive entries sink to the end
@@ -198,7 +199,7 @@ module s32_mixer (
                     < {tmp[j+1].active, tmp[j+1].effpri}) begin
                     t = tmp[j]; tmp[j] = tmp[j+1]; tmp[j+1] = t;
                 end
-        for (int i = 0; i < 7; i++) sorted_c[i] = tmp[i];
+        sorted_c = tmp;
     end
 
     // ------------------------------------------------- sprite grouping
@@ -311,11 +312,12 @@ module s32_mixer (
     // index (v < spr_k ? v : v - 1)
     logic       vhit [0:7];
     always_comb begin
+        int si;
+        si = 0;
         for (int v = 0; v < 8; v++) begin
             if (3'(v) == spr_k)
                 vhit[v] = spr_opaque;
             else begin
-                int si;
                 si = (3'(v) < spr_k) ? v : v - 1;
                 vhit[v] = (si <= 6) ? hit_v[si] : 1'b0;
             end

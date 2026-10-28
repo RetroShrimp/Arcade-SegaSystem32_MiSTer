@@ -18,7 +18,6 @@
 // port loads the ROM image while the core is held in reset (S32.sv drives
 // it).
 
-
 module s32_board (
     input  logic        clk,
     input  logic        rst_core,     // core reset (held during load)
@@ -45,7 +44,6 @@ module s32_board (
     input  logic [24:0] ld_addr,
     input  logic [7:0]  ld_data,
     output logic        ld_rdy,
-
 
     // ---- video out
     output logic        de,
@@ -93,7 +91,6 @@ module s32_board (
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
 
-
     // ---- EEPROM image
     output logic [15:0] ee_dump_data,
     input  logic [5:0]  ee_dump_addr,
@@ -138,7 +135,7 @@ module s32_board (
     logic        srom_re;
     logic [21:0] srom_addr;
     logic [31:0] srom_data;
-    logic        fb_we, fb_bank, fb_shadow, fb_erase_w, fb_disp_bank;
+    logic        fb_we, fb_bank, fb_shadow, fb_disp_bank;
     logic        fbr_re;
     logic [8:0]  fb_x, fbr_x;
     logic [7:0]  fb_y, fbr_line;
@@ -172,7 +169,7 @@ module s32_board (
         .mrom_data(mc_data), .mrom_hold(mc_hold),
         .fb_we(fb_we), .fb_bank(fb_bank), .fb_x(fb_x), .fb_y(fb_y),
         .fb_wdata(fb_wdata), .fb_shadow(fb_shadow),
-        .fb_erase(fb_erase_w),
+        .fb_erase(),
         .fb_disp_bank(fb_disp_bank),
         .fbr_re(fbr_re), .fbr_x(fbr_x), .fbr_line(fbr_line),
         .fbr_data(fbr_data), .fb_top_line(fb_top_line),
@@ -412,7 +409,6 @@ module s32_board (
 
     // (instance below, after cen_spr's terms exist)
 
-
     // ========================================= frame buffer line cache
     // Two line buffers, so a whole line is ready before the beam reaches it
     // (a refill takes ~400 clk; the beam needs the line's first pixel within
@@ -440,13 +436,9 @@ module s32_board (
             fbs_sel = 1'b1; fbs_hit = 1'b1;
         end
     end
-    wire fbl_hit = fbs_hit;
 
     typedef enum logic [0:0] { PF_IDLE, PF_RUN } pf_e;
     pf_e   pf;
-    logic [5:0] pf_burst;             // 40 bursts x 8 words = 320 px
-    // 52 bursts (416 px) in the wide mode; vid_wide changes only in vblank
-    wire  [5:0] pf_last = vid_wide ? 6'd51 : 6'd39;
     logic       pf_bsel;              // bank being filled
     logic [7:0] pf_line_t;            // fill target line (latched)
     logic       pf_dbank_t;           // fill target display bank (latched)
@@ -467,7 +459,6 @@ module s32_board (
     wire pf_victim = !fbl_vv[0] ? 1'b0
                    : !fbl_vv[1] ? 1'b1 : 1'b0;   // reactive: spare a valid
     wire pf_nsrv  = ~fbs_sel;                    // the non-serving bank
-
 
     // The line comes from DDR3, so SDRAM port 2 is unused (which frees about
     // 12% of SDRAM time per frame).
@@ -502,7 +493,6 @@ module s32_board (
                         pf_bsel   <= pf_victim;
                         pf_line_t <= fbr_line;
                         pf_dbank_t<= fb_disp_bank;
-                        pf_burst  <= 6'd0;
                         fbl_vv[pf_victim] <= 1'b0;
                         pf <= PF_RUN;
                     end else if (!pred_res
@@ -510,7 +500,6 @@ module s32_board (
                         pf_bsel   <= pf_nsrv;
                         pf_line_t <= pred_line;
                         pf_dbank_t<= fb_disp_bank;
-                        pf_burst  <= 6'd0;
                         fbl_vv[pf_nsrv] <= 1'b0;
                         pf <= PF_RUN;
                     end
@@ -590,185 +579,35 @@ module s32_board (
     wire [15:0] l0_word = {l0q[15] & ~l0shq, l0q[14:0]};
     assign fbr_data = l0_sel_q ? l0_word : fbl_q[16 * fbr_xl_q +: 16];
 
-
-    // ============================== frame buffer write path in SDRAM
-    // Used only when the frame buffer is kept in SDRAM; with the DDR3 frame
-    // buffer (s32_fbddr) nothing is fed in, so fwq stays empty and dr idle.
-    //
-    // Writes are posted through a 16-deep in-order FIFO so the sprite engine
-    // does not wait an arbiter round-trip per pixel (the real 315-5386 has a
-    // dedicated frame buffer). Erase writes are gathered into full 8-word
-    // bursts. Erase and render writes never interleave, and shadow
-    // read-modify-writes leave the FIFO in order, so a shadow read can never
-    // pass a queued write to the same word. No per-beat DQM masking: on this
-    // board DQM misses the chip's sampling edge (see s32_sdram.sv).
-    typedef enum logic [1:0] { DR_IDLE, DR_WR, DR_RMW_RD, DR_RMW_WR } dr_e;
-    dr_e dr;
-
-    // accept side: erase line collector
-    logic [127:0] er_buf;
-    logic [2:0]   er_cnt;
-    logic [24:1]  er_base;
-    // posted erase burst slot
-    logic [127:0] erq_data;
-    logic [24:1]  erq_base;
-    logic         erq_v;
-
-    // write FIFO: {shadow, word addr, data}
-    localparam FWQ_AW = 4;                       // 16 deep
-    logic [40:0] fwq [0:(1<<FWQ_AW)-1];
-    logic [FWQ_AW:0] fwq_wp, fwq_rp;
-    logic [FWQ_AW:0] fwq_used;
-    logic fwq_full, fwq_empty;
-    assign fwq_used  = fwq_wp - fwq_rp;
-    assign fwq_full  = fwq_used[FWQ_AW];
-    assign fwq_empty = (fwq_wp == fwq_rp);
-
-    // Once 12 of 16 entries are used, the drain is urgent until only four
-    // remain. s32_sdram caps a same-row chain at eight writes and keeps the
-    // tile/sprite-ROM reads above it, so urgency cannot hog the SDRAM.
-    always_ff @(posedge clk) begin
-        if (rst_core) wurgent <= 1'b0;
-        else if (fwq_used >= 5'd12) wurgent <= 1'b1;
-        else if (fwq_used <= 5'd4)  wurgent <= 1'b0;
-    end
-
-    // drain-side working regs
-    logic [24:1] dr_addr;
-    logic [15:0] dr_data;
-
-    // the engine stalls ONLY on backpressure: render write into a
-    // full FIFO, an erase line completing while the previous erase
-    // burst is still posted, or the FIRST erase pixel while queued
-    // render writes are still draining (boundary order: a leftover
-    // render write to line L must land BEFORE the erase burst that
-    // clears L — see the pop-hold below for the reverse direction).
-    // er_cnt==0 fires per 8-px group but the FIFO is empty mid-sweep,
-    // so the boundary check costs nothing after the first line.
+    // ============================== sprite frame-buffer writes
+    // The frame buffer lives in DDR3 (s32_fbddr): the engine's writes go
+    // there, and its backpressure is s32_fbddr's. (The SDRAM frame-buffer
+    // write path -- posted FIFO, erase coalescer, drain FSM -- was retired
+    // 2026-10-28 with the SDRAM frame buffer, docs/cleanup.md #1.)
     logic fbw_ok;
-    // DDR3 frame buffer: backpressure comes from s32_fbddr, and the SDRAM
-    // write path below is never fed.
     assign fbw_ok = fbddr_wok;
+    // no posted SDRAM writes remain, so the controller's write-urgency
+    // input never asserts
+    assign wurgent = 1'b0;
 
-
-    // ---- accept: never blocks the engine except via fbw_ok above
-    always_ff @(posedge clk) begin
-        if (rst_core) begin
-            er_cnt <= 3'd0;
-            erq_v  <= 1'b0;
-            fwq_wp <= '0;
-        end else begin
-            if (1'b0) begin                 // FB writes go to DDR3
-                if (fb_erase_w) begin
-                    er_buf[16*er_cnt +: 16] <= fb_wdata;
-                    if (er_cnt == 3'd0)
-                        er_base <= fb_word(fb_bank, fb_y, fb_x);
-                    if (er_cnt == 3'd7) begin
-                        // post the completed line (fbw_ok guaranteed
-                        // erq_v clear on this cycle)
-                        erq_data <= {fb_wdata, er_buf[111:0]};
-                        erq_base <= er_base;
-                        erq_v    <= 1'b1;
-                        er_cnt   <= 3'd0;
-                    end else
-                        er_cnt <= er_cnt + 3'd1;
-                end else begin
-                    fwq[fwq_wp[FWQ_AW-1:0]] <=
-                        {fb_shadow, fb_word(fb_bank, fb_y, fb_x), fb_wdata};
-                    fwq_wp <= fwq_wp + 1'b1;
-                end
-            end
-            // (this branch only runs with rst_core low, so the burst
-            // port's wbdone here is always the erase slot's own — the
-            // loader owns the port exclusively during held reset)
-            if (erq_v && wbdone)
-                erq_v <= 1'b0;
-        end
-    end
-
-    // ---- drain: pops in order; RMW blocks only the DRAIN, not the
-    // engine (order vs queued writes is preserved by the FIFO). Pops
-    // hold while an erase burst is posted so the burst lands before
-    // any subsequent render write (erase and render writes never
-    // interleave — the hold only acts at the phase boundary).
-    logic        drq_shadow;
-    logic [24:1] drq_addr;
-    logic [15:0] drq_data;
-    assign {drq_shadow, drq_addr, drq_data} = fwq[fwq_rp[FWQ_AW-1:0]];
-
-    // Single-write-port owner flag (set in the owner mux below), declared
-    // here so the drain only consumes its OWN wdone: a VRAM write-through
-    // can hold the port while dr waits in DR_WR.
+    // Single-write-port owner flag (set in the owner mux below).
     logic vram_w_own;
 
-    always_ff @(posedge clk) begin
-        if (rst_core) begin
-            dr <= DR_IDLE;
-            fwq_rp <= '0;
-        end else begin
-            unique case (dr)
-                DR_IDLE:
-                    if (!fwq_empty && !erq_v) begin
-                        dr_addr <= drq_addr;
-                        dr_data <= drq_data;
-                        fwq_rp  <= fwq_rp + 1'b1;
-                        dr <= drq_shadow ? DR_RMW_RD : DR_WR;
-                    end
-
-                DR_WR:
-                    if (wdone
-                        // only our own completion (see vram_w_own)
-                        && !vram_w_own
-                       ) begin
-                        // pop the next plain write without dropping
-                        // wreq, so the controller chains it onto the
-                        // open row (one FB line = one SDRAM row). Shadow
-                        // RMWs and the erase boundary go through DR_IDLE,
-                        // which closes the row first.
-                        if (!fwq_empty && !erq_v && !drq_shadow) begin
-                            dr_addr <= drq_addr;
-                            dr_data <= drq_data;
-                            fwq_rp  <= fwq_rp + 1'b1;
-                        end else
-                            dr <= DR_IDLE;
-                    end
-
-                DR_RMW_RD:
-                    if (rdone[1] && p1_owner == 2'd1) begin
-                        // extract the word, clear bit 15, write back
-                        dr_data <= rdata[16 * dr_addr[3:1] +: 16]
-                                   & 16'h7FFF;
-                        dr <= DR_RMW_WR;
-                    end
-
-                DR_RMW_WR:
-                    if (wdone
-                        && !vram_w_own
-                       ) dr <= DR_IDLE;
-
-                default: dr <= DR_IDLE;
-            endcase
-        end
-    end
-
-    // port 1 is shared between the FB shadow-RMW reads and the V60
-    // data-line client. A grant OWNER register keeps request, data
-    // and done attribution unambiguous (RMW has priority when both
-    // arrive; the loser's level request simply waits).
-    logic [1:0] p1_owner;             // 0 none, 1 rmw, 2 data
-    logic       p1_rmw_want;
-    assign p1_rmw_want = (dr == DR_RMW_RD);
+    // Port 1 serves the V60 data-line client. A grant OWNER register keeps
+    // request, data and done attribution unambiguous. (Owner 1, the SDRAM
+    // frame buffer's shadow read-modify-write, was retired with it; the
+    // data client keeps code 2.)
+    logic [1:0] p1_owner;             // 0 none, 2 data
 
     always_ff @(posedge clk) begin
         if (rst_ctrl)
             p1_owner <= 2'd0;
         else if (p1_owner == 2'd0) begin
-            if (p1_rmw_want)   p1_owner <= 2'd1;
             // Port 1 is pure V60 (rmw/drf). The VRAM fill client lives on
             // the near-idle port 5 (see the p5_owner mux below): on port 1
             // it would wait out the V60's in-flight, NON-PREEMPTIBLE
             // transaction before it could even bid.
-            else if (drf_dn_req)  p1_owner <= 2'd2;
+            if (drf_dn_req)       p1_owner <= 2'd2;
         end else if (rdone[1])
             p1_owner <= 2'd0;
     end
@@ -779,28 +618,24 @@ module s32_board (
     // registered like the tile/sprite pairs: the owner mux fed the
     // arbiter's g_addr capture directly (fit-stage path)
     always_ff @(posedge clk) begin
-        rreq[1]  <= ((p1_owner == 2'd1) ? 1'b1
-                   : (p1_owner == 2'd2) ? drf_dn_req
-                   : 1'b0) && !rst_ctrl;
-        raddr[1] <= (p1_owner == 2'd1) ? {dr_addr[24:4], 3'b000}
-                                       : {4'd0, drf_dn_line, 3'b000};
+        rreq[1]  <= (p1_owner == 2'd2) && drf_dn_req && !rst_ctrl;
+        raddr[1] <= {4'd0, drf_dn_line, 3'b000};
     end
     assign drf_dn_done = rdone[1] && (p1_owner == 2'd2);
     assign vram_rf_data = rdata;   // shared read bus, port-independent
 
     // ============================================ ROM load + wb mux
-    // during held core reset the loader owns the burst-write port;
-    // afterwards it belongs to the erase path. The load stream is
+    // during held core reset the loader owns the burst-write port (its only
+    // user since the SDRAM frame buffer's erase path was retired). The load
+    // stream is
     // byte-sequential and every region is 16-byte aligned, so lines
     // always fill completely.
     logic [127:0] ld_buf;
     logic [24:4]  ld_line;
-    logic [3:0]   ld_fill;
     logic         ld_flush;
 
     always_ff @(posedge clk) begin
         if (rst_ctrl) begin
-            ld_fill <= 4'd0;
             ld_flush <= 1'b0;
         end else begin
             if (ld_wr && !ld_flush) begin
@@ -814,29 +649,25 @@ module s32_board (
     assign ld_rdy = sdr_ready && !ld_flush;
 
     // wb port mux
-    assign wbreq  = rst_core ? ld_flush : erq_v;
-    assign wbaddr = rst_core ? {ld_line, 3'b000} : erq_base;
-    assign wbdata = rst_core ? ld_buf : erq_data;
+    assign wbreq  = rst_core && ld_flush;
+    assign wbaddr = rst_core ? {ld_line, 3'b000} : '0;
+    assign wbdata = rst_core ? ld_buf : '0;
 
-    // single-write port: engine pixels + RMW writeback, and the VRAM
-    // write-through as the lowest-priority owner.
-    wire        other_w = (dr == DR_WR) || (dr == DR_RMW_WR);
+    // single-word write port: the VRAM write-through is its only user
     always_ff @(posedge clk) begin
         if (rst_ctrl)                                    vram_w_own <= 1'b0;
         else if (vram_w_own && wdone)                    vram_w_own <= 1'b0;
-        else if (!vram_w_own && vram_wr_req && !other_w) vram_w_own <= 1'b1;
+        else if (!vram_w_own && vram_wr_req)             vram_w_own <= 1'b1;
     end
-    assign wreq  = other_w || (vram_w_own && vram_wr_req);
-    assign waddr = vram_w_own ? vram_wr_addr : dr_addr;
-    assign wdata = vram_w_own ? vram_wr_data : dr_data;
+    assign wreq  = vram_w_own && vram_wr_req;
+    assign waddr = vram_w_own ? vram_wr_addr : '0;
+    assign wdata = vram_w_own ? vram_wr_data : '0;
     assign wdqm  = vram_w_own ? vram_wr_dqm  : 2'b00;
     assign vram_wr_done = wdone && vram_w_own;
 
     // ================================================= freeze fabric
-    logic trom_ok, srom_ok, fbl_ok;
-    assign trom_ok = !(trom_re && !tc_hit);
+    logic srom_ok;
     assign srom_ok = !(srom_re && !sc_hit);
-    assign fbl_ok  = !(fbr_re && !fbl_hit);
 
     // The live pipeline renders from buffers filled ahead of the beam: the
     // pattern streamer waits on trom_ack and the frame buffer line is always
@@ -861,7 +692,6 @@ module s32_board (
         .quiet(fbddr_quiet)
     );
 
-
     // ---- Z80 sound-ROM cache, on SDRAM read port 5. zc_hold stalls only
     // the Z80 (inside s32_sys).
     logic [21:0]  zc_addr;
@@ -881,7 +711,6 @@ module s32_board (
         .rf_req(zc_req), .rf_addr(zc_rfa),
         .rf_data(rdata), .rf_done(zc_done)
     );
-
 
     // ---- V25 MCU ROM cache: shares port 5 with the Z80 cache via a
     // grant-owner register (same pattern as p1_owner; Z80 priority)
@@ -937,6 +766,5 @@ module s32_board (
     assign p5_urgent    = (p5_owner == 3'd4) && vram_rf_urg;
     assign vram_pf      = 1'b0;
     assign vram_pending = 1'b0;
-
 
 endmodule

@@ -60,7 +60,19 @@ module eeprom_93c46 (
     //      reset, so this is now structural rather than incidental.
     //   3. init_wen keeps priority and works under reset and during busy (the
     //      NVRAM restore runs while reset is held).
-    logic [15:0] mem [0:63];
+    //
+    // MLAB, two clean registered read ports (the dump port and rd_q below),
+    // so Quartus builds two small MLAB copies and no register file. Until
+    // 2026-10-27 the serial engine read `shreg <= mem[rd_a]` inside the
+    // command branches, which inference could not take as a port: it kept a
+    // second, register-based copy of the whole array (543.6 ALMs, Info
+    // 276007) beside an M10K for the dump port (docs/corertlcleanup.md C2).
+    // no_rw_check is safe: the write port is busy only in a program sweep
+    // (busy is set on the same edge, and no command is decoded while busy)
+    // or under the NVRAM restore (held reset), so a write never meets the
+    // serial engine's read of the same word; the dump port re-reads every
+    // clk, as the M10K's DONT_CARE mixed port already did.
+    (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] mem [0:63];
 
     // ---- single write port: NVRAM preload, else the program sweep ----------
     logic        sw_run  = 1'b0;   // sweep active
@@ -111,9 +123,23 @@ module eeprom_93c46 (
     // next word; every other state starts a READ at the just-clocked address.
     wire [5:0] rd_a = (est == E_READ) ? (addr + 6'd1) : {cmd[4:0], di};
 
+    // The serial engine's port: an unconditional registered read. A command
+    // that needs the word raises rd_ld on the SCLK edge that completes its
+    // address (rd_q captures mem[rd_a] on that same edge, with the DI just
+    // clocked), and shreg takes rd_q one clk later. The next SCLK edge is
+    // microseconds away, so the extra clk is invisible on DO.
+    logic [15:0] rd_q;
+    logic        rd_ld = 1'b0;
+    always_ff @(posedge clk) rd_q <= mem[rd_a];
+
     always_ff @(posedge clk) begin
         sclk_q <= sclk;
         cs_q   <= cs;
+
+        // a load never shares its clk with a shift: rd_ld follows an
+        // sclk_rise, and the next rise needs SCLK to fall first
+        rd_ld <= 1'b0;
+        if (rd_ld) shreg <= rd_q;
 
         // the program sweep runs regardless of CS/reset state: it is the
         // internal self-timed cycle, and 64 of the 131,072 busy clocks are
@@ -197,7 +223,7 @@ module eeprom_93c46 (
                                     // MSB-first on subsequent rising edges
                                     est <= E_READ;
                                     do_out <= 1'b0;
-                                    shreg <= mem[rd_a];
+                                    rd_ld <= 1'b1;      // shreg <= mem[rd_a]
                                     bit_cnt <= 5'd0;
                                 end
                                 2'b01: begin        // WRITE
@@ -246,7 +272,7 @@ module eeprom_93c46 (
                         bit_cnt <= bit_cnt + 5'd1;
                         if (bit_cnt == 5'd15) begin // word done: stream next
                             addr <= addr + 6'd1;
-                            shreg <= mem[rd_a];
+                            rd_ld <= 1'b1;      // shreg <= mem[rd_a]
                             bit_cnt <= 5'd0;
                         end
                     end

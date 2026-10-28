@@ -119,3 +119,18 @@ set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt_pre3[0]~0"
 set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt_pre2[3]~0"
 # The same enable's name in the dev (HUD) netlist; binds nothing in this one.
 set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt[7]~0"
+
+# ---- 2026-10-28: the vendored jt12's small memories out of M10K -------------
+# M10K is the binding resource (docs/corertlcleanup.md B2). Per YM3438 the
+# phase-modulation delay line (208 bits as an altshift_taps) held 2 M10K and
+# the log-sine and exponent ROMs (256 x 12 and 256 x 10) 1 each: 8 blocks
+# for ~11 Kbit. These build them from registers and LUTs instead. The shift-
+# register setting covers all of jt12_op: with phasemod_sh alone, Quartus
+# made its prev2_buffer delay line an altshift_taps instead. jt12 is
+# vendored and never edited, so the lever is here, not in its source.
+set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym1|jt12_top:u_jt12|jt12_op:u_op"
+set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym2|jt12_top:u_jt12|jt12_op:u_op"
+set_instance_assignment -name AUTO_ROM_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym1|jt12_top:u_jt12|jt12_op:u_op|jt12_logsin:u_logsin"
+set_instance_assignment -name AUTO_ROM_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym2|jt12_top:u_jt12|jt12_op:u_op|jt12_logsin:u_logsin"
+set_instance_assignment -name AUTO_ROM_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym1|jt12_top:u_jt12|jt12_op:u_op|jt12_exprom:u_exprom"
+set_instance_assignment -name AUTO_ROM_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym2|jt12_top:u_jt12|jt12_op:u_op|jt12_exprom:u_exprom"
