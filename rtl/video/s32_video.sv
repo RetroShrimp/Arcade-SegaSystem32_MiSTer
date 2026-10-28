@@ -1117,7 +1117,23 @@ module s32_video (
     assign bf_wx  = bf_col - 9'(BF_OFF);
     assign bf_lwe = cen_mix && rgb_valid && (bf_col >= 9'(BF_OFF))
                     && (bf_wx <= hlast);
-    (* ramstyle = "MLAB" *) logic [14:0] bf_lbuf [0:415];
+    // "no_rw_check": with plain "MLAB" Quartus built this from 6,240
+    // registers plus a read mux (Info 276009, unsupported read-during-write;
+    // a standalone copy of these two always blocks DOES infer, so it is
+    // something in the surrounding netlist, not the coding). The MLAB's
+    // same-address write+read returns garbage on silicon, which no bench
+    // shows (board-design.md §9.7). Here it cannot happen at all: writes
+    // come on cen_mix = bf_cen, which is cen_pix delayed one clk (the BF
+    // FSM above sets it under cen_pix and clears it every clk), and the read
+    // register loads only on cen_pix, one clk in ~10.3 (320 wide) or 8 (416
+    // wide; s32_sys acc_pix), never two in a row -- so a write and a read
+    // never share a clk, whatever the addresses. Measured over a whole
+    // frame in each mode (s32_video LIVE bench, Rad Mobile 320 and Burning
+    // Rival 416): 0 coincidences in 323k/423k writes and 455k/573k reads,
+    // writes 1-2 columns ahead of the beam. The assertion below guards it.
+    // quartus_map of s32_video with release macros, 2026-10-27: MLAB, Simple
+    // Dual Port, 416 deep. §9.6a.
+    (* ramstyle = "MLAB, no_rw_check" *) logic [14:0] bf_lbuf [0:415];
     always_ff @(posedge clk)
         if (bf_lwe) bf_lbuf[bf_wx] <= mix_rgb;
     // 315-5296 CNT1 (TVKL) display enable: blank the output. Registered

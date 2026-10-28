@@ -94,6 +94,11 @@ module s32_sys (
     // ---- SegaSonic's FD1149 protection model (board descriptor bit 7).
     // See s32_v60bus's "FD1149 level load".
     input  logic        prot_sonic,
+    // ---- Rad Mobile's 837-7536 A/D board (board descriptor byte 2 bit 0):
+    // one MSM6253 at $C00050 (s32_msm6253). adc_ain[8n +: 8] is channel n's
+    // conversion result (unsigned).
+    input  logic        adc_board,
+    input  logic [31:0] adc_ain,
 
     // ---- video out
     output logic        de,
@@ -361,6 +366,8 @@ module s32_sys (
         .bcu_pend(bcu_pend),
         .trk_board(trk_board), .trk_sel(trk_sel), .trk_we(trk_we),
         .trk_offset(trk_offset), .trk_rdata(trk_rdata),
+        .adc_board(adc_board), .adc_sel(adc_sel), .adc_we(adc_we),
+        .adc_offset(adc_offset), .adc_rdata(adc_rdata),
         .prot_sonic(prot_sonic)
         , .vid_hold(vram_cpu_hold)
     );
@@ -449,6 +456,17 @@ module s32_sys (
     endgenerate
     assign trk_rdata = (trk_offset[3:2] == 2'd0) ? trk_rd[0]
                      : (trk_offset[3:2] == 2'd1) ? trk_rd[1] : trk_rd[2];
+
+    // A/D board: one MSM6253
+    logic        adc_sel, adc_we;
+    logic [1:0]  adc_offset;
+    logic [7:0]  adc_rdata;
+    s32_msm6253 u_adc (
+        .clk(clk), .rst(rst),
+        .ain0(adc_ain[7:0]), .ain1(adc_ain[15:8]),
+        .ain2(adc_ain[23:16]), .ain3(adc_ain[31:24]),
+        .sel(adc_sel), .we(adc_we), .offset(adc_offset), .rdata(adc_rdata)
+    );
 
     s32_i8255 u_ppi (
         .clk(clk), .rst(rst),

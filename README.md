@@ -4,8 +4,8 @@ An FPGA recreation of Sega's **System 32** arcade board for the
 [MiSTer](https://mister-devel.github.io/MkDocs_MiSTer/) platform, built
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
-**Arabian Fight**, **Burning Rival**, **Dark Edge** and **SegaSonic The
-Hedgehog**, which use the same board.
+**Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
+Hedgehog** and **Rad Mobile**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -37,6 +37,8 @@ it is the first FPGA implementation of that CPU.
 | `Dark Edge (Japan).mra` | `darkedgej` | not yet tested on hardware |
 | `SegaSonic The Hedgehog.mra` | `sonic` | tested on hardware |
 | `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` | runs in simulation; not yet tested on hardware |
+| `Rad Mobile.mra` | `radm` | tested on hardware |
+| `Rad Mobile (US).mra` | `radmu` | runs in simulation; not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -63,7 +65,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `spidmanj.zip`), `holo.zip`, `svf.zip` (plus `svfo.zip` or
    `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`),
    `brival.zip` (plus `brivalj.zip`), `darkedge.zip` (plus
-   `darkedgej.zip`), and `sonic.zip` (plus `sonicp.zip`).
+   `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), and `radm.zip`
+   (plus `radmu.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -76,8 +79,9 @@ report.
 ## Controls
 
 Golden Axe, Spider-Man and Arabian Fight take up to four players, SegaSonic
-three, Holosseum, Super Visual Football, Burning Rival and Dark Edge two.
-Except in SegaSonic (below), each player uses the D-pad or stick plus these
+three, Holosseum, Super Visual Football, Burning Rival and Dark Edge two,
+and Rad Mobile one. Except in SegaSonic and Rad Mobile (below), each player
+uses the D-pad or stick plus these
 buttons. The MRAs map them to a pad by
 default, and MiSTer's input mapping can change that:
 
@@ -114,6 +118,14 @@ stick of pad 1; players 2 and 3 use the left analog sticks of pads 2 and 3.
 The ball counts every step as it arrives, as the real board's counters do.
 Spin Jump is A, Start is Start and Coin is Select; player 3's coin and start
 are pad 3's. Service and Test have no default.
+
+**Rad Mobile** is played with a steering wheel and two pedals, which the
+board reads through an A/D converter. The wheel is the left analog stick of
+pad 1 (left and right), or the D-pad, which turns it while held and lets it
+return to the centre. The accelerator is A or the stick pushed up, the brake
+B or the stick pulled down; a stick pushed halfway is a pedal pressed fully.
+The cabinet's two buttons, Light and Wiper, are X and Y. Start is Start and
+Coin is Select; Service and Test have no default. A game costs two credits.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -162,7 +174,7 @@ Off before you use it again.
 | Sprites | Sega 315-5386, drawing into a double frame buffer | `rtl/video/s32_sprite*.sv`; the frame buffers live in the DE10's DDR3 |
 | Mixer and palette | Sega 315-5388 | `rtl/video/s32_mixer.sv` |
 | Bus and interrupts | Sega 315-5385 | `rtl/sys32/` |
-| Inputs | Sega 315-5296 I/O chip, plus an i8255 for players 3 and 4; SegaSonic's trackball board (three uPD4701A counters) | `rtl/sys32/` |
+| Inputs | Sega 315-5296 I/O chip, plus an i8255 for players 3 and 4; SegaSonic's trackball board (three uPD4701A counters); Rad Mobile's A/D board (an OKI MSM6253 converter) | `rtl/sys32/` |
 | Settings | 93C46 serial EEPROM | `rtl/sys32/eeprom_93c46.sv` |
 | Sound | Z80, two YM3438 FM chips and an RF5C68-family PCM chip | `rtl/sound/` (FM by jt12, Z80 by tv80) |
 | Protection (Golden Axe only) | NEC V25 running an encrypted program, talking to the V60 through an MB8421 dual-port RAM | `rtl/sys32/s32_v25.sv` |
@@ -247,6 +259,10 @@ Things you may notice, or may want to know:
   and the byte the game writes at `$C00074` is not documented; the core
   resets a counter on any write to it, as MAME does, and ignores
   `$C00074`.
+- **Rad Mobile's A/D board.** The converter takes the wheel and pedal
+  positions as they are when the game asks for a channel, as MAME does. The
+  real chip converts continuously, so its value can be up to one conversion
+  period old; the period is not documented here.
 - **Not implemented**: the parts of the V25 that the Golden Axe and Arabian
   Fight protection programs do not use.
 
@@ -314,6 +330,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

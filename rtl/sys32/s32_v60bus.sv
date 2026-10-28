@@ -34,7 +34,8 @@
 // "FD1149 flag words" block below. Dark Edge's (prot_darkedge): the
 // "FD1149 vblank writes" block. SegaSonic's (prot_sonic): the "FD1149
 // level load" block. SegaSonic's trackball board (trk_board): uPD4701A
-// counters at I/O offsets 40-57 (R_TRK; s32_upd4701).
+// counters at I/O offsets 40-57 (R_TRK; s32_upd4701). Rad Mobile's A/D
+// board (adc_board): an MSM6253 at I/O offsets 50-57 (R_ADC; s32_msm6253).
 
 module s32_v60bus (
     input  logic        clk,
@@ -133,6 +134,15 @@ module s32_v60bus (
     output logic        trk_we,
     output logic [3:0]  trk_offset,
     input  logic [7:0]  trk_rdata,
+    // ---- A/D board (Rad Mobile's 837-7536, descriptor byte 2 bit 0): one
+    //      MSM6253 at I/O offsets 50-57, even bytes (MAME
+    //      system32_analog_map). adc_offset = the word offset, which picks
+    //      the channel on a write. Open bus without the board
+    input  logic        adc_board,
+    output logic        adc_sel,
+    output logic        adc_we,
+    output logic [1:0]  adc_offset,
+    input  logic [7:0]  adc_rdata,
 
     // ---- interrupt controller (8-bit, combinational rdata)
     output logic        ic_sel,
@@ -235,7 +245,7 @@ module s32_v60bus (
 
     typedef enum logic [3:0] {
         R_ROM, R_WRAM, R_VID, R_SPRRAM, R_SPRCTL, R_SHM,
-        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK
+        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK, R_ADC
     } region_e;
 
     // mirrors (s32tech "Memory map"): the 6xxxxx video pair repeats every
@@ -257,6 +267,8 @@ module s32_v60bus (
         else if (a[23:20] == 4'hC && a[6:0] < 7'h20) region_of = R_IO;
         else if (a[23:20] == 4'hC && trk_board && a[6:3] >= 4'h8
                  && a[6:3] < 4'hB)                   region_of = R_TRK;
+        else if (a[23:20] == 4'hC && adc_board && a[6:3] == 4'hA)
+                                                     region_of = R_ADC;
         else if (a[23:20] == 4'hC && a[6:3] == 4'b1100)
                                                      region_of = R_PPI;
         else if (a[23:19] == 5'b11010)               region_of = R_IC;
@@ -521,6 +533,7 @@ module s32_v60bus (
             R_IO:    sub_rd8 = o_addr[0] ? 8'hFF : io_rdata;
             R_PPI:   sub_rd8 = o_addr[0] ? 8'hFF : ppi_rdata;
             R_TRK:   sub_rd8 = o_addr[0] ? 8'hFF : trk_rdata;
+            R_ADC:   sub_rd8 = o_addr[0] ? 8'hFF : adc_rdata;
             R_IC:    sub_rd8 = ic_rdata;
             default: sub_rd8 = 8'hFF;
         endcase
@@ -543,6 +556,8 @@ module s32_v60bus (
         ppi_offset = o_addr[2:1]; ppi_wdata = o_wbyte;
         trk_sel = 1'b0; trk_we = 1'b0;
         trk_offset = {o_addr[4:3], o_addr[2:1]};
+        adc_sel = 1'b0; adc_we = 1'b0;
+        adc_offset = o_addr[2:1];
         ic_sel = 1'b0; ic_we = 1'b0;
         ic_addr = o_addr[3:0]; ic_wdata = o_wbyte;
         vid_sel = 1'b0; vid_we = 1'b0;
@@ -571,6 +586,7 @@ module s32_v60bus (
                 R_IO:     if (!o_addr[0]) begin io_sel = 1'b1; io_we = o_we; end
                 R_PPI:    if (!o_addr[0]) begin ppi_sel = 1'b1; ppi_we = o_we; end
                 R_TRK:    if (!o_addr[0]) begin trk_sel = 1'b1; trk_we = o_we; end
+                R_ADC:    if (!o_addr[0]) begin adc_sel = 1'b1; adc_we = o_we; end
                 R_IC:     begin ic_sel = 1'b1; ic_we = o_we; end
                 R_VID:    begin vid_sel = 1'b1; vid_we = o_we; end
                 R_SPRCTL: begin sc_sel = 1'b1; sc_we = o_we; end

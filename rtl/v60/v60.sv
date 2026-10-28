@@ -74,7 +74,9 @@ module v60 (
         S_RET3,                       // ret: SP += 8 + num (after PC, AP pops)
         // movbsu/movbsd (bit-string move, one bit a cycle)
         S_BS_LEN, S_BS_ADDR, S_BS_NEXT, S_BS_CAPS, S_BS_CAPD, S_BS_BIT,
-        S_BS_FLUSH, S_BS_END1, S_BS_END2
+        S_BS_FLUSH, S_BS_END1, S_BS_END2,
+        // bit fields (extbf*/insbf*) and the upward bit search (sch*bsu)
+        S_BF_LEN, S_BF_RD, S_BF_CAP, S_BF_WR, S_SB_RD, S_SB_CAP, S_SB_BIT
     } state_e;
     state_e state;
 
@@ -138,32 +140,62 @@ module v60 (
     always_comb begin
         op1_d = OD_NONE; op2_d = OD_NONE;
         op1_regf = b1[4:0]; op2_regf = b1[4:0];
-        op1_off = 6'd2; op2_off = 6'd2;
-        op1_m = b1[6]; op2_m = b1[5];
         wb_to_op1 = 1'b0;
         unique case (ft_q)
             4'd0: begin                       // F1
                 if (b1[5]) begin
-                    op1_d = OD_AM;  op1_off = 6'd2; op1_m = b1[6];
-                    op2_d = OD_REG;
+                    op1_d = OD_AM;  op2_d = OD_REG;
                 end else begin
-                    op1_d = OD_REG;
-                    op2_d = OD_AM;  op2_off = 6'd2; op2_m = b1[6];
+                    op1_d = OD_REG; op2_d = OD_AM;
                 end
             end
             4'd1, 4'd8, 4'd9, 4'd10: begin    // F2 / F7 family
-                op1_d = OD_AM; op1_off = 6'd2;               op1_m = b1[6];
-                op2_d = OD_AM; op2_off = 6'd2 + 6'(l1_q);    op2_m = b1[5];
-                if (ft_q != 4'd1)
-                    op2_off = 6'd3 + 6'(l1_q);               // skip ext byte
+                op1_d = OD_AM; op2_d = OD_AM;
             end
             4'd3: begin                       // F3
-                op1_d = OD_AM; op1_off = 6'd1; op1_m = b0[0];
+                op1_d = OD_AM;
                 wb_to_op1 = 1'b1;
             end
             default: ;                        // F4/F5/F6: handled in EXEC
         endcase
     end
+
+    // Each operand's AM offset and m bit, from the decoder's own outputs
+    // and latched at S_DECODE (op1_off_q...). They select the AM window
+    // (iw_sh), the head of the V60's critical path (offset -> window ->
+    // index register -> DSP multiply -> adders -> v60_bcu q1_a, ~30 ns of
+    // the 31 ns core period); decoding them from ft_q/l1_q in the operand
+    // states put three LUT levels in front of it (STA 2026-10-27, Rad
+    // Mobile build: core -0.011 / -0.189 at seeds 1 / 7). iw only changes
+    // in S_FETCH, so the latched values equal the old combinational ones
+    // for the whole instruction.
+    logic [5:0] dec_op1_off, dec_op2_off, op1_off_q, op2_off_q;
+    logic       dec_op1_m, dec_op2_m, op1_m_q, op2_m_q;
+
+    always_comb begin
+        dec_op1_off = 6'd2; dec_op2_off = 6'd2;
+        dec_op1_m = b1[6]; dec_op2_m = b1[5];
+        unique case (ftype)
+            4'd0:                             // F1: AM op2 (b1[5]=0) is m=b1[6]
+                if (!b1[5]) dec_op2_m = b1[6];
+            4'd1, 4'd8, 4'd9, 4'd10: begin    // F2 / F7 family
+                dec_op2_off = 6'd2 + 6'(am1l);
+                // F7a/F7b put an extension byte between the operands; F7c
+                // puts its one extension byte after both (MAME
+                // F7cDecodeOperands; radmu's `insbfr #1, R11@[R17], #1` is
+                // 5D B8 | E1 | CB 71 | 01)
+                if (ftype == 4'd8 || ftype == 4'd9)
+                    dec_op2_off = 6'd3 + 6'(am1l);           // skip ext byte
+            end
+            4'd3: begin                       // F3
+                dec_op1_off = 6'd1; dec_op1_m = b0[0];
+            end
+            default: ;
+        endcase
+    end
+
+    assign op1_off = op1_off_q; assign op2_off = op2_off_q;
+    assign op1_m = op1_m_q;     assign op2_m = op2_m_q;
 
     // ---------------------------------------------------------------- regs
     logic [4:0]  ra_a, ra_b, waddr;
@@ -214,6 +246,21 @@ module v60 (
     // in bit-addressing mode (v60_ea header)
     logic is_bs;
     assign is_bs = (exec_q == 8'd65) || (exec_q == 8'd66);
+    // extbfs/z/l (67-69): operand 1 is a bit address, operand 2 the word
+    // destination. insbfr/l (70/71): operand 1 the word source, operand 2 a
+    // bit address. sch0bsu/sch1bsu (72/73): as extbf. adddc/subdc/subrdc
+    // (74-76): byte operands, no bit addressing.
+    logic is_bf_ext, is_bf_ins, is_sb, is_dc;
+    assign is_bf_ext = (exec_q >= 8'd67) && (exec_q <= 8'd69);
+    assign is_bf_ins = (exec_q == 8'd70) || (exec_q == 8'd71);
+    assign is_sb     = (exec_q == 8'd72) || (exec_q == 8'd73);
+    assign is_dc     = (exec_q >= 8'd74) && (exec_q <= 8'd76);
+    // which operand is resolved in bit-addressing mode
+    logic bit_op1, bit_op2, ea_bitmode;
+    assign bit_op1 = is_bs || is_bf_ext || is_sb;
+    assign bit_op2 = is_bs || is_bf_ins;
+    assign ea_bitmode = (state == S_OP2_EA || state == S_OP2_DEF) ? bit_op2
+                                                                  : bit_op1;
 
     // ---------------------------------------------------------------- EA
     logic [79:0] ea_bytes;
@@ -232,7 +279,7 @@ module v60 (
 
     v60_ea u_ea (
         .am_bytes(ea_bytes), .m(ea_m), .opsize(ea_size),
-        .reg_val(rd_b), .idx_val(rd_a), .pc(pc), .bitmode(is_bs),
+        .reg_val(rd_b), .idx_val(rd_a), .pc(pc), .bitmode(ea_bitmode),
         .reg_sel(ea_regsel), .idx_sel(ea_idxsel),
         .ea(ea_out), .ea_kind(ea_kind),
         .base_wb(ea_wb), .base_wen(ea_wen),
@@ -413,7 +460,7 @@ module v60 (
         (exec_q == 8'd63) ||                     // call: target address (op2,
                                                  // the arg list, is address-
                                                  // only via !op2_need_val)
-        is_bs;                                   // movbs: bit-string base
+        bit_op1;                                 // movbs/extbf/sch: bit base
 
     // op2 old value needed from MEMORY (RMW, bit ops, xch, updpsw, test1);
     // register destinations always read via the port (width merge), which
@@ -423,7 +470,40 @@ module v60 (
         is_alu || is_shift || is_md ||
         (exec_q >= 8'd33 && exec_q <= 8'd36) ||
         (exec_q == 8'd41) || (exec_q == 8'd43) ||
-        (exec_q == 8'd52) || (exec_q == 8'd64);     // skpcu/skpcd: char value
+        (exec_q == 8'd52) || (exec_q == 8'd64) ||   // skpcu/skpcd: char value
+        is_dc;                                      // adddc/subdc: dst digits
+
+    // adddc/subdc/subrdc (NEC V60 manual ADDDC p.7-6, SUBDC p.7-107, SUBRDC; MAME
+    // opADDDC/opSUBDC/opSUBRDC, op7a.hxx): two packed-BCD digits per byte.
+    // dst <- dst + src + CY, dst - src - CY, or src - dst - CY, wrapping at
+    // 100 with CY as the carry/borrow. The mask pattern (extension byte) is
+    // ignored, as MAME ignores it: Rad Mobile passes #0, which masks nothing.
+    // Invalid digits raise a Decimal Format exception on the real CPU; like
+    // MAME, this computes with them instead (docs/radm-bringup.md §4).
+    function automatic logic [7:0] bcd_val (input logic [7:0] b);
+        bcd_val = 8'(b[7:4]) * 8'd10 + 8'(b[3:0]);
+    endfunction
+    logic [8:0]  dc_sum;              // signed 9-bit work value
+    logic [7:0]  dc_bin, dc_res;
+    logic        dc_cy;
+    always_comb begin
+        unique case (exec_q)
+            8'd74:   dc_sum = 9'(bcd_val(op1_val[7:0])) + 9'(bcd_val(op2_val[7:0]))
+                              + 9'(psw[3]);
+            8'd76:   dc_sum = 9'(bcd_val(op1_val[7:0])) - 9'(bcd_val(op2_val[7:0]))
+                              - 9'(psw[3]);
+            default: dc_sum = 9'(bcd_val(op2_val[7:0])) - 9'(bcd_val(op1_val[7:0]))
+                              - 9'(psw[3]);
+        endcase
+        if (exec_q == 8'd74) begin
+            dc_cy  = (dc_sum >= 9'd100);
+            dc_bin = dc_cy ? 8'(dc_sum - 9'd100) : dc_sum[7:0];
+        end else begin
+            dc_cy  = dc_sum[8];                     // negative: borrow
+            dc_bin = dc_cy ? 8'(dc_sum + 9'd100) : dc_sum[7:0];
+        end
+        dc_res = {4'(dc_bin / 8'd10), 4'(dc_bin % 8'd10)};
+    end
 
     // combinational execute result + flags
     logic [31:0] exec_res;
@@ -489,6 +569,14 @@ module v60 (
                     exec_setflags = 1'b1;
                 end
                 8'd42: exec_res = {31'd0, cond(op1_val[3:0], psw[3:0])};
+                8'd74, 8'd75, 8'd76: begin                  // adddc/subdc/subrdc
+                    exec_res = {24'd0, dc_res};
+                    // CY = carry/borrow; Z cleared by a non-zero result or a
+                    // carry, otherwise unchanged; OV, S unchanged
+                    exec_flags = {dc_cy, psw[2], psw[1],
+                                  psw[0] & (dc_res == 8'd0) & !dc_cy};
+                    exec_setflags = 1'b1;
+                end
                 default: ;
             endcase
         end
@@ -542,6 +630,33 @@ module v60 (
     assign bs_o1 = bs_off1 + (bs_down ? bs_len - 32'd1 : 32'd0);
     assign bs_o2 = bs_off2 + (bs_down ? bs_len - 32'd1 : 32'd0);
 
+    // bit fields (extbfs/z/l, insbfr/l; NEC V60 manual EXTBF p.7-41 and INSBF
+    // p.7-49; MAME opEXTBF*/opINSBF*, op7a.hxx). The field is blen bits at
+    // bit (offset & 7) of the unaligned dword at base + (offset >>> 3); the
+    // manual requires offset + length <= 32 (else an Illegal Data Field
+    // exception), so one dword access holds every legal field. Flags
+    // unchanged. The working registers are movbs's: bs_len = blen,
+    // bs_sa = the dword's (or, for sch*bsu, the current byte's) address,
+    // bs_sb = the bit, bs_sd = the cached byte, bs_i = the bit count.
+    logic [31:0] bf_mask, bf_fld, bf_res, bf_src, bf_ins;
+    logic [5:0]  bf_n;                // blen clipped to 32
+    always_comb begin
+        bf_n    = (bs_len > 32'd32) ? 6'd32 : bs_len[5:0];
+        bf_mask = (bf_n == 6'd32) ? 32'hFFFF_FFFF : ((32'd1 << bf_n) - 32'd1);
+        bf_fld  = (mem_rdata >> bs_sb) & bf_mask;
+        unique case (exec_q)
+            8'd67: bf_res = bf_fld | ((bf_n != 6'd0 && bf_fld[bf_n - 6'd1])
+                                      ? ~bf_mask : 32'd0);   // sign extend
+            8'd69: bf_res = (bf_n == 6'd0) ? 32'd0
+                                           : bf_fld << (6'd32 - bf_n); // left
+            default: bf_res = bf_fld;                         // zero extend
+        endcase
+        // insbfl takes the field from the top of the source word
+        bf_src = (exec_q == 8'd71) ? (op1_val >> (6'd32 - bf_n)) : op1_val;
+        bf_ins = (mem_rdata & ~(bf_mask << bs_sb))
+               | ((bf_src & bf_mask) << bs_sb);
+    end
+
     // element addresses per mode (down-copy and the downward scan walk
     // high-to-low; a scan's str_dest is its length)
     logic [31:0] str_a1, str_a2;
@@ -568,6 +683,12 @@ module v60 (
     assign iw_e2 = iw << ((6'd3 + {1'b0, l1_q} + {1'b0, l2_q}) * 8);
     assign ext1_b = iw_e1[111:104];
     assign ext2_b = iw_e2[111:104];
+    // F7c's one extension byte follows both operands (2+l1+l2): insbf's blen
+    logic [111:0] iw_e3;
+    logic [7:0]   ext3_b, bf_ext;
+    assign iw_e3 = iw << ((6'd2 + {1'b0, l1_q} + {1'b0, l2_q}) * 8);
+    assign ext3_b = iw_e3[111:104];
+    assign bf_ext = is_bf_ins ? ext3_b : ext1_b;
 
     assign fetch_pc = pc;
 
@@ -762,6 +883,17 @@ module v60 (
                 mem_we = 1'b1; mem_addr = bs_da; mem_size = 3'd1;
                 mem_wdata = {24'd0, bs_dd};
             end
+            S_BF_LEN: if (bf_ext[7]) ra_a = bf_ext[4:0];
+            S_BF_RD: begin                          // the field's dword
+                mem_re = 1'b1; mem_addr = bs_sa; mem_size = 3'd4;
+            end
+            S_BF_WR: begin                          // insbf: merged dword
+                mem_we = 1'b1; mem_addr = bs_sa; mem_size = 3'd4;
+                mem_wdata = wb_res_q;
+            end
+            S_SB_RD: begin                          // sch*bsu: next byte
+                mem_re = 1'b1; mem_addr = bs_sa; mem_size = 3'd1;
+            end
             S_PUSHM: begin
                 ra_a = mask_idx[4:0];
                 if (mask_q != 32'd0 && mask_q[mask_idx[4:0]]) begin
@@ -862,6 +994,8 @@ module v60 (
                 S_DECODE: begin
                     len_q <= ilen; exec_q <= execop; ft_q <= ftype;
                     s1_q <= s1; s2_q <= s2; l1_q <= am1l; l2_q <= am2l;
+                    op1_off_q <= dec_op1_off; op2_off_q <= dec_op2_off;
+                    op1_m_q <= dec_op1_m;     op2_m_q <= dec_op2_m;
                     op1_isreg <= 1'b0; op2_isreg <= 1'b0;
                     op1_ismem <= 1'b0; op2_ismem <= 1'b0;
                     if (!ldec_valid || execop == 8'hFF) begin
@@ -924,7 +1058,7 @@ module v60 (
                     // bit mode: the second displacement (or the index, via
                     // ea_bitoff) is a bit offset from the fetched pointer
                     op1_ea_q <= mem_rdata + ea_defidx +
-                        ((def_has_d2(ea_bytes, op1_m) && !is_bs)
+                        ((def_has_d2(ea_bytes, op1_m) && !bit_op1)
                             ? def_disp2(ea_bytes) : 32'd0);
                     bs_off1 <= def_has_d2(ea_bytes, op1_m) ? def_disp2(ea_bytes)
                                                            : ea_bitoff;
@@ -978,7 +1112,7 @@ module v60 (
                 end
                 S_OP2_DEF: begin
                     op2_ea_q <= mem_rdata + ea_defidx +
-                        ((def_has_d2(ea_bytes, op2_m) && !is_bs)
+                        ((def_has_d2(ea_bytes, op2_m) && !bit_op2)
                             ? def_disp2(ea_bytes) : 32'd0);
                     bs_off2 <= def_has_d2(ea_bytes, op2_m) ? def_disp2(ea_bytes)
                                                            : ea_bitoff;
@@ -1156,6 +1290,13 @@ module v60 (
                                 // (sonic 098FCE, sonicp 0897C0).
                                 bs_down <= (exec_q == 8'd66);
                                 state <= S_BS_LEN;
+                            end
+                            8'd67, 8'd68, 8'd69, 8'd70, 8'd71,
+                            8'd72, 8'd73: begin
+                                // extbf* / insbf* / sch*bsu (Rad Mobile's
+                                // bit-stream decompressor): S_BF_LEN reads
+                                // blen, then the field or the search
+                                state <= S_BF_LEN;
                             end
                             8'd44: begin                // halt
                                 trap <= 1'b1; trap_op <= exec_q;
@@ -1515,6 +1656,77 @@ module v60 (
                 S_BS_END2: begin
                     wen <= 1'b1; waddr <= 5'd27; wdata <= bs_da;
                     pc <= next_seq_pc; state <= S_FETCH;
+                end
+
+                // ------------------------------------------ bit fields
+                S_BF_LEN: begin : bf_len_st
+                    // blen: Rn or a 7-bit immediate; the byte holding the
+                    // field (or the search's first bit) is base + offset >>> 3
+                    logic [31:0] base, off, n;
+                    base = is_bf_ins ? op2_ea_q : op1_ea_q;
+                    off  = is_bf_ins ? bs_off2  : bs_off1;
+                    n    = bf_ext[7] ? rd_a : {25'd0, bf_ext[6:0]};
+                    bs_len <= n;
+                    bs_sa <= base + {{3{off[31]}}, off[31:3]};
+                    bs_sb <= off[2:0];
+                    bs_i  <= 32'd0;
+                    if (is_sb && n == 32'd0) begin
+                        // empty search: Z = 1, dst = 0, R28 untouched (MAME's
+                        // loop never runs)
+                        flags_wen <= 1'b1;
+                        flags_wdata <= {psw[3:1], 1'b1};
+                        wb_res_q <= 32'd0;
+                        state <= S_WB;
+                    end else
+                        state <= is_sb ? S_SB_RD : S_BF_RD;
+                end
+                S_BF_RD: state <= S_BF_CAP;          // dword read (comb)
+                S_BF_CAP: begin
+                    if (is_bf_ins) begin
+                        wb_res_q <= bf_ins;
+                        state <= S_BF_WR;
+                    end else begin
+                        wb_res_q <= bf_res;          // extbf: to dst via WB
+                        state <= S_WB;
+                    end
+                end
+                S_BF_WR: begin                       // write issued comb
+                    pc <= next_seq_pc; state <= S_FETCH;
+                end
+
+                // sch0bsu / sch1bsu (NEC V60 manual SCH0BS p.7-94 / SCH1BS p.7-95; MAME
+                // opSCHBS, op7a.hxx): scan upward for the first 0 (or 1) bit;
+                // dst = its offset from the string start (Z = 0), or blen
+                // when none (Z = 1); R28 = the byte holding the detected or
+                // final bit; CY/OV/S unchanged. The offset is relative to the
+                // start, as MAME writes it and as radmu's decoder needs (it
+                // adds dst + 1 to its own bit cursor, 07FD2E).
+                S_SB_RD: state <= S_SB_CAP;          // byte read (comb)
+                S_SB_CAP: begin
+                    bs_sd <= mem_rdata[7:0];
+                    state <= S_SB_BIT;
+                end
+                S_SB_BIT: begin
+                    if (bs_sd[bs_sb] == (exec_q == 8'd73)) begin
+                        wen <= 1'b1; waddr <= 5'd28; wdata <= bs_sa;
+                        flags_wen <= 1'b1;
+                        flags_wdata <= {psw[3:1], 1'b0};
+                        wb_res_q <= bs_i;
+                        state <= S_WB;
+                    end else if (bs_i + 32'd1 == bs_len) begin
+                        wen <= 1'b1; waddr <= 5'd28; wdata <= bs_sa;
+                        flags_wen <= 1'b1;
+                        flags_wdata <= {psw[3:1], 1'b1};
+                        wb_res_q <= bs_len;
+                        state <= S_WB;
+                    end else begin
+                        bs_i <= bs_i + 32'd1;
+                        bs_sb <= bs_sb + 3'd1;
+                        if (bs_sb == 3'd7) begin
+                            bs_sa <= bs_sa + 32'd1;
+                            state <= S_SB_RD;
+                        end
+                    end
                 end
 
                 // ------------------------------------------ pushm/popm

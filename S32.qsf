@@ -63,10 +63,10 @@ set_global_assignment -name ECO_OPTIMIZE_TIMING ON
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
-# The release bitstream was fitted with seed 1. The worst path on this design
+# The release bitstream was fitted with seed 11. The worst path on this design
 # is in the framework's HDMI scaler (ascal), not the core; if a source change
 # leaves that clock slightly negative, try another seed.
-set_global_assignment -name SEED 1
+set_global_assignment -name SEED 11
 
 # This tree is the release configuration of the core: the sources carry no
 # configuration switches, so no core VERILOG_MACRO is needed here. The lines

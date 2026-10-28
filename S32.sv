@@ -399,14 +399,26 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          (MAME sega_system32_track, INPUT_PORTS_START(sonic))
 //   bit 7  FD1149 protection module 317-0213 (SegaSonic rev C): s32_v60bus's
 //          level load on a write to $20E5C4 (MAME init_sonic)
-// The byte is now full: a further board needs a second descriptor byte.
+// A second byte (`<part>C0 01</part>`: byte 0, then byte 1) carries the
+// boards after SegaSonic. A one-byte .mra leaves it 0.
+//   byte 1 bit 0  837-7536 A/D board (Rad Mobile): one MSM6253 at $C00050
+//          and the game's driving harness: the wheel, accelerator and brake
+//          on A/D channels 0-2, Light and Wiper on P1_A bits 1/2, every
+//          other P1_A/P2_A bit and START2 unused (MAME sega_system32_analog,
+//          INPUT_PORTS_START(radm); docs/radm-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
 reg [7:0] board_cfg = 8'h00;
+reg [7:0] board_cfg2 = 8'h00;
 always @(posedge clk_sys)
-	if (ioctl_wr && ioctl_download && ioctl_index == 1 && ioctl_addr == 0)
-		board_cfg <= ioctl_dout;
+	if (ioctl_wr && ioctl_download && ioctl_index == 1) begin
+		if (ioctl_addr == 0) begin
+			board_cfg  <= ioctl_dout;
+			board_cfg2 <= 8'h00;      // a one-byte descriptor clears byte 1
+		end
+		if (ioctl_addr == 1) board_cfg2 <= ioctl_dout;
+	end
 
 //////////////////////   INPUTS   ////////////////////////////////
 
@@ -430,9 +442,16 @@ endfunction
 // other bit of both ports is unused and reads high (MAME
 // INPUT_PORTS_START(sonic)). Coin 3 / Start 3 are SERVICE12 bits 6/7.
 wire trk_board = board_cfg[6];
-wire [7:0] in_p1 = trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
+// Driving harness (board_cfg2[0], Rad Mobile): Light on P1_A bit 1 (pad 1
+// button 3), Wiper on bit 2 (pad 1 button 4); every other bit of P1_A and
+// P2_A is unused and reads high (MAME INPUT_PORTS_START(radm)). Buttons 1
+// and 2 are the pedals (A/D channels, below), not switch inputs.
+wire adc_board = board_cfg2[0];
+wire [7:0] in_p1 = adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
+                 : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
                              : pad(joystick_0);
-wire [7:0] in_p2 = trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
+wire [7:0] in_p2 = adc_board ? 8'hFF
+                 : trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
 // Six-button harness (board_cfg[3], Burning Rival): EXTRA2 carries buttons
 // 4-6 of players 1 and 2 in MAME INPUT_PORTS_START(brival)'s bit order,
 // bits 3 and 6 unknown (read high); EXTRA1 and EXTRA3 are unused.
@@ -483,7 +502,7 @@ wire test_btn = |osd_test_cnt | joystick_0[10] | joystick_1[10];
 wire [7:0] in_service12 = ~{
 	trk_board & joystick_2[7],                    // START3 (trackball board)
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
-	joystick_1[7], joystick_0[7],                 // START2, START1
+	joystick_1[7] & ~adc_board, joystick_0[7],    // START2, START1
 	us_cab ? joystick_2[8] : joystick_1[8],       // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
 	test_btn,                                     // TEST
@@ -549,6 +568,45 @@ always @(posedge clk_sys) begin
 	if (rst_core) for (int n = 0; n < 6; n++) trk_acc[n] <= 13'd0;
 end
 
+// A/D channels (board_cfg2[0], Rad Mobile's 837-7536 board). The cabinet's
+// wheel and pedals are potentiometers that the MSM6253 converts
+// continuously, so each channel here is simply the control's current
+// position (MAME INPUT_PORTS_START(radm): ch0 wheel, centre $80; ch1
+// accelerator and ch2 brake, released $00; ch3 not connected, $FF):
+//   - wheel: pad 1's left stick X, $80 + X, so full lock is $00 / $FF.
+//     Inside the stick's dead zone the d-pad steers instead: held, the wheel
+//     turns 3 counts per 2^18 clk_sys (~250 Hz, ~0.17 s to full lock);
+//     released, it returns to centre at the same rate.
+//   - accelerator: pad 1 button 1 (full), or the stick pushed up;
+//     brake: button 2 (full), or the stick pulled down. The stick is
+//     scaled x2, so half deflection is full travel.
+// The rates and scales are usability settings, not hardware.
+reg [17:0] adc_tick_cnt = 0;
+always @(posedge clk_sys) adc_tick_cnt <= adc_tick_cnt + 1'd1;
+wire adc_tick = &adc_tick_cnt;
+wire [7:0] wheel_x = stick_dz(stick_0[7:0]);
+wire [7:0] pedal_y = stick_dz(stick_0[15:8]);
+reg  [7:0] wheel_dig = 8'h80;
+always @(posedge clk_sys) begin
+	if (rst_core)
+		wheel_dig <= 8'h80;
+	else if (adc_tick) begin
+		if (joystick_0[0] & ~joystick_0[1])             // right
+			wheel_dig <= (wheel_dig > 8'hFC) ? 8'hFF : wheel_dig + 8'd3;
+		else if (joystick_0[1] & ~joystick_0[0])        // left
+			wheel_dig <= (wheel_dig < 8'h03) ? 8'h00 : wheel_dig - 8'd3;
+		else if (wheel_dig > 8'h83)  wheel_dig <= wheel_dig - 8'd3;
+		else if (wheel_dig < 8'h7D)  wheel_dig <= wheel_dig + 8'd3;
+		else                         wheel_dig <= 8'h80;
+	end
+end
+wire [7:0] adc_wheel = (wheel_x != 8'd0) ? (wheel_x ^ 8'h80) : wheel_dig;
+// stick Y: negative = up (accelerator), positive = down (brake)
+wire [8:0] pedal_up = $signed(pedal_y) < 0 ? {-pedal_y, 1'b0} : 9'd0;
+wire [8:0] pedal_dn = $signed(pedal_y) > 0 ? {pedal_y, 1'b0} : 9'd0;
+wire [7:0] adc_accel = joystick_0[4] ? 8'hFF : pedal_up[8] ? 8'hFF : pedal_up[7:0];
+wire [7:0] adc_brake = joystick_0[5] ? 8'hFF : pedal_dn[8] ? 8'hFF : pedal_dn[7:0];
+
 //////////////////////   THE MACHINE   ///////////////////////////
 
 wire        de, hblank, vblank, hs, vs, ce_pix;
@@ -583,6 +641,8 @@ s32_board board
 	.trk_dx({trk_step[4], trk_step[2], trk_step[0]}),
 	.trk_dy({trk_step[5], trk_step[3], trk_step[1]}),
 	.prot_sonic(board_cfg[7]),
+	.adc_board(adc_board),
+	.adc_ain({8'hFF, adc_brake, adc_accel, adc_wheel}),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),

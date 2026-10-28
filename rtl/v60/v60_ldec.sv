@@ -169,9 +169,13 @@ module v60_ldec (
             end
             4'd1, 4'd8, 4'd9, 4'd10: begin                 // F2 / F7a/b/c
                 l1 = am_len(w1, b1[6], s1);
-                // second AM position: F2 at 2+l1; F7x at 3+l1 (skips the
-                // string-length/extension byte)
-                p2 = (ft == 4'd1) ? (6'd2 + 6'(l1)) : (6'd3 + 6'(l1));
+                // second AM position: F2 at 2+l1; F7a/F7b at 3+l1 (skips
+                // the string-length/extension byte); F7c at 2+l1, its one
+                // extension byte following both AMs (MAME
+                // F7cDecodeOperands; 2026-10-27, Rad Mobile's subdc/insbfr,
+                // the first F7c instructions the core executes)
+                p2 = (ft == 4'd1 || ft == 4'd10) ? (6'd2 + 6'(l1))
+                                                 : (6'd3 + 6'(l1));
                 sh2 = bytes_in << ({4'b0, p2} * 8);        // window at byte p2
                 l2 = am_len(sh2[111:32], b1[5], s2);
                 unique case (ft)

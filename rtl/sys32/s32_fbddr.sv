@@ -131,10 +131,20 @@ module s32_fbddr #(
     localparam int RW = $clog2(RUNMAX);       // gather index width
     logic        fill;                        // buffer currently accepting
     logic        wsel;                        // buffer currently draining
-    (* ramstyle = "MLAB" *) logic [63:0] run_d0  [0:RUNMAX-1];
-    (* ramstyle = "MLAB" *) logic [63:0] run_d1  [0:RUNMAX-1];
-    (* ramstyle = "MLAB" *) logic [7:0]  run_be0 [0:RUNMAX-1];
-    (* ramstyle = "MLAB" *) logic [7:0]  run_be1 [0:RUNMAX-1];
+    // MLAB with an asynchronous read (ddr_din/ddr_be read the drained buffer
+    // combinationally). Plain "MLAB" left all four as registers plus a read
+    // mux (Info 276009: Quartus cannot implement the RTL's same-address
+    // read-during-write); "no_rw_check" lets it build the MLAB, which is
+    // safe because nothing is ever pushed into the buffer being drained (the
+    // invariant asserted at the end of this module; it has never fired in
+    // any board-bench run, every game). A same-address collision could only
+    // happen in a buffer that is filling, whose read data the D_WR state
+    // never uses. Measured 2026-10-27 (quartus_map probe): all four in the
+    // RAM Summary as MLAB, ~2,300 registers gone. board-design.md §9.6a.
+    (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] run_d0  [0:RUNMAX-1];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] run_d1  [0:RUNMAX-1];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [7:0]  run_be0 [0:RUNMAX-1];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [7:0]  run_be1 [0:RUNMAX-1];
     logic [15:0] run_base [0:1];
     logic [7:0]  run_n    [0:1];
     logic        run_rdy  [0:1];              // sealed, waiting for the bus

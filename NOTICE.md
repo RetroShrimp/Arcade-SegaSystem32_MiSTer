@@ -32,7 +32,7 @@ its ROM address-line scramble (`rtl/sys32/s32_v25.sv`, from
 This repository contains no ROM data, no artwork, no manuals and no schematic
 scans. *Golden Axe*, *Holosseum*, *Super Visual Football*, *Super Visual
 Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*,
-*Sonic the Hedgehog* and *System 32* are
+*Sonic the Hedgehog*, *Rad Mobile* and *System 32* are
 trademarks of
 SEGA;
 *Spider-Man* is a trademark of Marvel. This is an unaffiliated

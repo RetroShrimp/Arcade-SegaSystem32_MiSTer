@@ -896,9 +896,9 @@ endfunction
 
 function automatic logic [7:0] v60_exectab_59 (input logic [4:0] sub);
     case (sub)
-        5'h00: v60_exectab_59 = 8'hFF;
-        5'h01: v60_exectab_59 = 8'hFF;
-        5'h02: v60_exectab_59 = 8'hFF;
+        5'h00: v60_exectab_59 = 8'h4A;
+        5'h01: v60_exectab_59 = 8'h4B;
+        5'h02: v60_exectab_59 = 8'h4C;
         5'h03: v60_exectab_59 = 8'hFF;
         5'h04: v60_exectab_59 = 8'hFF;
         5'h05: v60_exectab_59 = 8'hFF;
@@ -972,9 +972,9 @@ endfunction
 
 function automatic logic [7:0] v60_exectab_5B (input logic [4:0] sub);
     case (sub)
-        5'h00: v60_exectab_5B = 8'hFF;
+        5'h00: v60_exectab_5B = 8'h48;
         5'h01: v60_exectab_5B = 8'hFF;
-        5'h02: v60_exectab_5B = 8'hFF;
+        5'h02: v60_exectab_5B = 8'h49;
         5'h03: v60_exectab_5B = 8'hFF;
         5'h04: v60_exectab_5B = 8'hFF;
         5'h05: v60_exectab_5B = 8'hFF;
@@ -1056,9 +1056,9 @@ function automatic logic [7:0] v60_exectab_5D (input logic [4:0] sub);
         5'h05: v60_exectab_5D = 8'hFF;
         5'h06: v60_exectab_5D = 8'hFF;
         5'h07: v60_exectab_5D = 8'hFF;
-        5'h08: v60_exectab_5D = 8'hFF;
-        5'h09: v60_exectab_5D = 8'hFF;
-        5'h0A: v60_exectab_5D = 8'hFF;
+        5'h08: v60_exectab_5D = 8'h43;
+        5'h09: v60_exectab_5D = 8'h44;
+        5'h0A: v60_exectab_5D = 8'h45;
         5'h0B: v60_exectab_5D = 8'hFF;
         5'h0C: v60_exectab_5D = 8'hFF;
         5'h0D: v60_exectab_5D = 8'hFF;
@@ -1072,8 +1072,8 @@ function automatic logic [7:0] v60_exectab_5D (input logic [4:0] sub);
         5'h15: v60_exectab_5D = 8'hFF;
         5'h16: v60_exectab_5D = 8'hFF;
         5'h17: v60_exectab_5D = 8'hFF;
-        5'h18: v60_exectab_5D = 8'hFF;
-        5'h19: v60_exectab_5D = 8'hFF;
+        5'h18: v60_exectab_5D = 8'h46;
+        5'h19: v60_exectab_5D = 8'h47;
         5'h1A: v60_exectab_5D = 8'hFF;
         5'h1B: v60_exectab_5D = 8'hFF;
         5'h1C: v60_exectab_5D = 8'hFF;
