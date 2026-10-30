@@ -47,6 +47,20 @@ set_multicycle_path -hold 1 -from [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -setup 2 -to [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -hold 1 -to [get_registers {*|v60:u_v60|*}]
 
+# ---- V60 prefetch long-instruction hint: 2 periods ------------------------
+# v60_pfu decodes its "instruction longer than 16 bytes" hint (long_q) from a
+# window snapshot (win_q, cnt_q). Snapshot and hint load on the same
+# alternate clocks (hph), so long_q captures win_q/cnt_q two periods after
+# they were launched: true by construction, not by observation. -from and
+# -to both: the hph enable path and the window -> win_q path stay
+# single-cycle (v60_pfu.sv header; docs/slipstrm-bringup.md §5.1).
+set_multicycle_path -setup 2 \
+  -from [get_registers {*|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}] \
+  -to   [get_registers {*|v60_pfu:u_pfu|long_q}]
+set_multicycle_path -hold 1 \
+  -from [get_registers {*|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}] \
+  -to   [get_registers {*|v60_pfu:u_pfu|long_q}]
+
 # No exception covers the bus fabric. The core never reaches s32_v60bus
 # directly (the bus unit sits between them), and the decode from the bus
 # unit's registered address is a genuine single-cycle path.

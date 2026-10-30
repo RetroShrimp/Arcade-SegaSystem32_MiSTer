@@ -182,7 +182,7 @@ module s32_sys (
 
     // ------------------------------------------------------------ V60
     logic [31:0]  fetch_pc;
-    logic [111:0] v_fetch_bytes;
+    logic [175:0] v_fetch_bytes;
     logic         mem_re, mem_we;
     logic [31:0]  mem_addr, mem_wdata;
     logic [2:0]   mem_size;
@@ -212,10 +212,12 @@ module s32_sys (
     logic [23:0] pf_addr;
     logic [15:0] pf_rdata;
     logic [4:0]  fq_count;
+    logic [5:0]  live_len;           // the core's decoded length at fetch_pc
     logic        b60_fetch;
     v60_pfu u_pfu (
         .clk(clk), .rst(rst),
-        .pc(fetch_pc[23:0]), .window(v_fetch_bytes), .fq_count(fq_count),
+        .pc(fetch_pc[23:0]),
+        .window(v_fetch_bytes), .fq_count(fq_count),
         .pf_req(pf_req), .pf_addr(pf_addr), .pf_grant(pf_grant),
         .pf_rdata(pf_rdata), .pf_done(pf_done)
     );
@@ -225,7 +227,6 @@ module s32_sys (
     // filled window is still valid if it fits in fq_count, because then
     // every byte it looked at was valid. Unknown encodings fall through to
     // the core's own trap.
-    logic [5:0] live_len;
     assign fetch_hold = ({1'b0, fq_count} < live_len);
 
     // Fetch ROM adapter: the bus fabric drives romf_pc and reads back the

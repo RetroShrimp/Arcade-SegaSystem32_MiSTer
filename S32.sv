@@ -404,6 +404,10 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          on A/D channels 0-2, Light and Wiper on P1_A bits 1/2, every
 //          other P1_A/P2_A bit and START2 unused (MAME sega_system32_analog,
 //          INPUT_PORTS_START(radm); docs/radm-bringup.md)
+//   byte 1 bit 1  gear-shift harness (Slip Stream; Rad Rally's too), with
+//          bit 0: the cabinet's two-position gear lever on P1_A bit 0 in
+//          place of Light and Wiper, which are not fitted (MAME
+//          INPUT_PORTS_START(slipstrm), (radr); docs/slipstrm-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -445,7 +449,19 @@ wire trk_board = board_cfg[6];
 // P2_A is unused and reads high (MAME INPUT_PORTS_START(radm)). Buttons 1
 // and 2 are the pedals (A/D channels, below), not switch inputs.
 wire adc_board = board_cfg2[0];
-wire [7:0] in_p1 = adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
+// Gear-shift harness (board_cfg2[1], Slip Stream): the lever stays where it
+// is thrown, so pad 1 button 3 throws it, one press per change of gear (MAME
+// stands in for the lever the same way, PORT_TOGGLE on "Gear Change"). It
+// starts in the open (high) position at power-on and keeps its place over a
+// core reset, as a lever would; the game reads it as a level.
+wire gear_harness = board_cfg2[1];
+reg  gear_lever = 1'b0, gear_btn_q = 1'b0;
+always @(posedge clk_sys) begin
+	gear_btn_q <= joystick_0[6];
+	if (joystick_0[6] & ~gear_btn_q) gear_lever <= ~gear_lever;
+end
+wire [7:0] in_p1 = (adc_board & gear_harness) ? ~{7'd0, gear_lever}
+                 : adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
                  : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
                              : pad(joystick_0);
 wire [7:0] in_p2 = adc_board ? 8'hFF

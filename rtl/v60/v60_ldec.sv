@@ -1,6 +1,6 @@
 // v60_ldec.sv — NEC V60 instruction length/format decoder.
 //
-// Given the first 14 bytes of an instruction stream, produces the total
+// Given the first 22 bytes of an instruction stream, produces the total
 // instruction length, format class, and operand-size fields. Implements the
 // NEC manual's Formats I-VII (ch.6) with addressing-mode extension sizes;
 // the per-opcode table is v60_optab.svh. Checked against every distinct
@@ -14,8 +14,8 @@
 // 15 unhandled.
 
 module v60_ldec (
-    input  logic [111:0] bytes_in,   // byte0 = [111:104] ... byte13 = [7:0]
-    output logic [5:0]   length,     // total instruction bytes (1..20)
+    input  logic [175:0] bytes_in,   // byte0 = [175:168] ... byte21 = [7:0]
+    output logic [5:0]   length,     // total instruction bytes (1..22)
     output logic [3:0]   ftype,      // resolved format (F1F2 -> F1 or F2)
     output logic [1:0]   opsize1,
     output logic [1:0]   opsize2,
@@ -112,13 +112,13 @@ module v60_ldec (
     logic [3:0]  ft;
     logic [1:0]  s1, s2;
     logic [79:0]  w1, w1f3;
-    logic [111:0] sh2;
+    logic [175:0] sh2;
     logic [4:0]   l1, l2;
     logic [5:0]   p2;                // byte position of the second AM field
 
     always_comb begin
-        b0  = bytes_in[111:104];
-        b1  = bytes_in[103:96];
+        b0  = bytes_in[175:168];
+        b1  = bytes_in[167:160];
         ent = v60_optab(b0);
         ft  = ent[7:4];
         s1  = ent[3:2];
@@ -153,12 +153,12 @@ module v60_ldec (
             ft = b1[7] ? 4'd1 : 4'd0;
 
         // first AM window: F3 reads the AM at byte1, everything else byte2
-        w1   = bytes_in[95:16];      // bytes 2..11
-        w1f3 = bytes_in[103:24];     // bytes 1..10
+        w1   = bytes_in[159:80];     // bytes 2..11
+        w1f3 = bytes_in[167:88];     // bytes 1..10
         l1   = 5'd0;
         l2   = 5'd0;
         p2   = 6'd0;
-        sh2  = 112'd0;
+        sh2  = 176'd0;
         length = 6'd1;
         valid  = 1'b1;
 
@@ -177,7 +177,7 @@ module v60_ldec (
                 p2 = (ft == 4'd1 || ft == 4'd10) ? (6'd2 + 6'(l1))
                                                  : (6'd3 + 6'(l1));
                 sh2 = bytes_in << ({4'b0, p2} * 8);        // window at byte p2
-                l2 = am_len(sh2[111:32], b1[5], s2);
+                l2 = am_len(sh2[175:96], b1[5], s2);
                 unique case (ft)
                     4'd1:    length = 6'd2 + 6'(l1) + 6'(l2);
                     4'd8:    length = 6'd4 + 6'(l1) + 6'(l2);

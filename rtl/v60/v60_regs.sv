@@ -56,7 +56,10 @@ module v60_regs (
     input  logic [3:0]  preg_sel,
     output logic [31:0] preg_rdata,
     input  logic        preg_wen,
-    input  logic [31:0] preg_wdata
+    input  logic [31:0] preg_wdata,
+    // SYCW, always visible: ldtask/sttask need its SPSI field (bits 11:8)
+    // in the same cycle as the TR read/write on the preg port
+    output logic [31:0] sycw_o
 );
 
     // privileged register numbering (stpr/ldpr operand values)
@@ -80,6 +83,7 @@ module v60_regs (
     assign rdata_a = (raddr_a == 5'd31) ? sp_view : gpr[raddr_a];
     assign rdata_b = (raddr_b == 5'd31) ? sp_view : gpr[raddr_b];
     assign psw = psw_q;
+    assign sycw_o = sycw;
 
     always_comb begin
         unique case (preg_sel)

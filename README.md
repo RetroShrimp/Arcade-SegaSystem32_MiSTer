@@ -5,7 +5,8 @@ An FPGA recreation of Sega's **System 32** arcade board for the
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
-Hedgehog** and **Rad Mobile**, which use the same board.
+Hedgehog**, **Rad Mobile** and Capcom's **Slip Stream**, which use the same
+board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -39,6 +40,8 @@ it is the first FPGA implementation of that CPU.
 | `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` | runs in simulation; not yet tested on hardware |
 | `Rad Mobile.mra` | `radm` | tested on hardware |
 | `Rad Mobile (US).mra` | `radmu` | runs in simulation; not yet tested on hardware |
+| `Slip Stream.mra` | `slipstrm` | tested on hardware |
+| `Slip Stream (Hispanic).mra` | `slipstrmh` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -65,8 +68,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `spidmanj.zip`), `holo.zip`, `svf.zip` (plus `svfo.zip` or
    `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`),
    `brival.zip` (plus `brivalj.zip`), `darkedge.zip` (plus
-   `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), and `radm.zip`
-   (plus `radmu.zip`).
+   `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), `radm.zip`
+   (plus `radmu.zip`), and `slipstrm.zip` (plus `slipstrmh.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -126,6 +129,13 @@ return to the centre. The accelerator is A or the stick pushed up, the brake
 B or the stick pulled down; a stick pushed halfway is a pedal pressed fully.
 The cabinet's two buttons, Light and Wiper, are X and Y. Start is Start and
 Coin is Select; Service and Test have no default. A game costs two credits.
+
+**Slip Stream** uses the same wheel and pedals, read the same way, and a
+two-position gear lever in place of Light and Wiper. Shift (X) throws the
+lever: one press per change of gear, and it stays where it is thrown, as the
+cabinet's does. Start is Start and Coin is Select; Service and Test have no
+default. A game costs two credits. The game runs 416 pixels wide in its
+menus and 320 wide in its races, and switches between them as it goes.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -263,6 +273,11 @@ Things you may notice, or may want to know:
   positions as they are when the game asks for a channel, as MAME does. The
   real chip converts continuously, so its value can be up to one conversion
   period old; the period is not documented here.
+- **The V60's task switching (Slip Stream).** Slip Stream's program is a
+  small multitasking kernel built on the V60's own task instructions
+  (LDTASK, STTASK, CHLVL). The core follows NEC's manual, which leaves the
+  interrupt enable bit unchanged when CHLVL enters the kernel; MAME clears
+  it. How many cycles a task switch takes is not documented.
 - **Not implemented**: the parts of the V25 that the Golden Axe and Arabian
   Fight protection programs do not use.
 
@@ -330,6 +345,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

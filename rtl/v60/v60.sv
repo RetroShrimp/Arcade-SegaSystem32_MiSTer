@@ -6,8 +6,9 @@
 // external interrupts and NMI. An instruction it does not implement stops
 // the core in S_TRAP with `trap` set and the opcode on trap_op.
 //
-// Instruction bytes arrive as a 14-byte window at fetch_pc (from the
-// prefetch queue, v60_pfu). Data accesses are transactions of 1, 2 or 4
+// Instruction bytes arrive as a 22-byte window at fetch_pc (from the
+// prefetch queue, v60_pfu): the longest V60 instruction, two 9-byte
+// double-displacement operands plus opcode, format and extension bytes. Data accesses are transactions of 1, 2 or 4
 // bytes at any alignment: a one-cycle mem_re/mem_we strobe in an issue
 // state, with the data used in the next state. The bus unit (v60_bcu)
 // turns them into the real CPU's 16-bit bus cycles. wait_hold freezes the
@@ -18,7 +19,7 @@ module v60 (
     input  logic         rst,
 
     output logic [31:0]  fetch_pc,
-    input  logic [111:0] fetch_bytes,
+    input  logic [175:0] fetch_bytes,
     output logic [5:0]   fetch_len,    // decoded length of the instruction
                                        // at fetch_bytes (s32_sys fetch_hold)
 
@@ -78,12 +79,14 @@ module v60 (
         S_BS_LEN, S_BS_ADDR, S_BS_NEXT, S_BS_CAPS, S_BS_CAPD, S_BS_BIT,
         S_BS_FLUSH, S_BS_END1, S_BS_END2,
         // bit fields (extbf*/insbf*) and the upward bit search (sch*bsu)
-        S_BF_LEN, S_BF_RD, S_BF_CAP, S_BF_WR, S_SB_RD, S_SB_CAP, S_SB_BIT
+        S_BF_LEN, S_BF_RD, S_BF_CAP, S_BF_WR, S_SB_RD, S_SB_CAP, S_SB_BIT,
+        // ldtask / sttask TCB walk, and chlvl's fourth (parameter) push
+        S_TK_RD, S_TK_CONSUME, S_TK_WR, S_XCP_P4
     } state_e;
     state_e state;
 
     logic [31:0] pc;
-    logic [111:0] iw;
+    logic [175:0] iw;
     logic [5:0]  len_q;
     logic [7:0]  exec_q;
     logic [3:0]  ft_q;
@@ -118,8 +121,8 @@ module v60 (
     logic       ldec_valid;
 
     logic [7:0] b0, b1;
-    assign b0 = iw[111:104];
-    assign b1 = iw[103:96];
+    assign b0 = iw[175:168];
+    assign b1 = iw[167:160];
 
     logic [7:0] execop;
     always_comb begin
@@ -221,12 +224,42 @@ module v60 (
     logic        psw_wen, flags_wen;
     logic [31:0] psw_wdata;
     logic [3:0]  flags_wdata;
+    // ldtask (78) / sttask (79) TCB walk (NEC V60 manual section 5, p.5-1
+    // to 5-3; LDTASK p.7-53, STTASK p.7-104). The TCB holds, at ascending
+    // addresses from TR: TKCW, then the level stack pointers SYCW.SPSI
+    // selects (bit 8 L0SP .. bit 11 L3SP), then the general registers the
+    // list operand selects (bit 0 R0 .. bit 30 R30; bit 31 is RFU), so one
+    // 36-slot mask walks it: slot 0 TKCW, 1-4 L0SP-L3SP, 5-35 R0-R30. The
+    // area table registers are stored only in virtual mode (SYCW.VM), which
+    // nothing on System 32 uses.
+    logic [35:0] tk_mask;
+    logic [5:0]  tk_idx;
+    logic [31:0] tk_ptr;
+    logic [31:0] sycw;                // v60_regs SYCW view
+    // A privileged-register write is registered (preg_wen lands one cycle
+    // after it is set), so a write whose register is not the ldpr operand
+    // carries its select in pw_sel_q (ldtask's TR, TKCW and stack pointers)
+    logic        pw_ovr_q;
+    logic [3:0]  pw_sel_q;
+    function automatic logic [3:0] tk_psel (input logic [5:0] slot);
+        tk_psel = (slot == 6'd0) ? 4'd8 : slot[3:0];   // TKCW, L0SP..L3SP
+    endfunction
+
     logic [31:0] preg_rdata, preg_wdata;
     logic        preg_wen;
     logic [3:0]  preg_sel_core;
-    assign preg_sel_core = (exec_q == 8'd30) ? op1_val[3:0]
-                         : (exec_q == 8'd53) ? 4'd5      // trap: SBR
+    // Order matters. A registered task-switch write (pw_ovr_q) and the
+    // sttask walk's reads come first; then S_XCP_SBR, which must not lose
+    // to a stale exec_q: an interrupt is taken in S_FETCH with the PREVIOUS
+    // instruction's exec_q still latched, so after an stpr (30) the vector
+    // read used to address stpr's register instead of SBR.
+    assign preg_sel_core = pw_ovr_q ? pw_sel_q              // ldtask writes
+                         : (state == S_TK_WR) ? tk_psel(tk_idx)  // sttask
                          : (state == S_XCP_SBR) ? 4'd5   // irq: SBR
+                         : (exec_q == 8'd30) ? op1_val[3:0]
+                         : (exec_q == 8'd53 || exec_q == 8'd77)
+                                               ? 4'd5    // trap/chlvl: SBR
+                         : (exec_q == 8'd79) ? 4'd6      // sttask: TR
                          : op2_val[3:0];
     logic [3:0]  preg_sel;
     logic        preg_wen_m;
@@ -255,7 +288,8 @@ module v60 (
         .psw(psw), .psw_wen(rf_psw_wen), .psw_wdata(rf_psw_wdata),
         .flags_wen(flags_wen), .flags_wdata(flags_wdata),
         .preg_sel(preg_sel), .preg_rdata(preg_rdata),
-        .preg_wen(preg_wen_m), .preg_wdata(preg_wdata_m)
+        .preg_wen(preg_wen_m), .preg_wdata(preg_wdata_m),
+        .sycw_o(sycw)
     );
 
     // movbsu (65) / movbsd (66): Format VIIb bit-string operands, resolved
@@ -289,9 +323,9 @@ module v60 (
     logic [5:0]  cur_off;             // AM offset for the active operand
 
     // AM window extraction: bytes at cur_off .. cur_off+9
-    logic [111:0] iw_sh;
+    logic [175:0] iw_sh;
     assign iw_sh = iw << ({4'b0, cur_off} * 8);
-    assign ea_bytes = iw_sh[111:32];
+    assign ea_bytes = iw_sh[175:96];
 
     v60_ea u_ea (
         .am_bytes(ea_bytes), .m(ea_m), .opsize(ea_size),
@@ -355,6 +389,14 @@ module v60 (
     // writeback; only the sign differs, and it travels as a REAL opr.
     logic is_dvx_op;
     assign is_dvx_op = (exec_q == 8'd54) || (exec_q == 8'd60);
+    // mulx (80) / mulux (81), NEC manual p.7-67/68: dst.d <- dst.w * src.w,
+    // the 64-bit product to Rn (low) and Rn+1 (high), or EA / EA+4. They
+    // share divx/divux's two-destination writeback (S_MD_WAIT, S_DVX_WB),
+    // but read only the low dword of a memory destination: the multiplicand
+    // is a word, so there is no S_DVX_RD high read.
+    logic is_mlx_op, is_pair_op;
+    assign is_mlx_op  = (exec_q == 8'd80) || (exec_q == 8'd81);
+    assign is_pair_op = is_dvx_op || is_mlx_op;
 
     // Both extended forms pass a real opcode (divux -> OP_DIVU, divx ->
     // OP_DIV) rather than exec_q[4:0], so the unit can tell signed from
@@ -363,6 +405,8 @@ module v60 (
                  : (exec_q == 8'd57) ? 5'd17     // remu -> unsigned divide
                  : (exec_q == 8'd54) ? 5'd17     // divux
                  : (exec_q == 8'd60) ? 5'd16     // divx
+                 : (exec_q == 8'd80) ? 5'd14     // mulx  -> signed multiply
+                 : (exec_q == 8'd81) ? 5'd15     // mulux -> unsigned multiply
                  : exec_q[4:0];
     v60_muldiv u_md (
         .clk(clk), .rst(rst), .start(md_start),
@@ -372,6 +416,7 @@ module v60 (
         // has the high dword on mem_rdata (read issued in S_DVX_RD)
         .a_hi(op2_isreg ? rd_a : mem_rdata), .mode_dvx(is_dvx_op),
         .mode_rem(exec_q == 8'd56 || exec_q == 8'd57),
+        .mode_mlx(is_mlx_op),
         .busy(md_busy), .done(),
         .result(md_res), .rem_out(md_rem), .flags_out(md_fo)
     );
@@ -487,6 +532,8 @@ module v60 (
         (exec_q >= 8'd33 && exec_q <= 8'd36) ||
         (exec_q == 8'd41) || (exec_q == 8'd43) ||
         (exec_q == 8'd52) || (exec_q == 8'd64) ||   // skpcu/skpcd: char value
+        (exec_q == 8'd77) ||                        // chlvl: arg.b.r
+        (exec_q == 8'd78) ||                        // ldtask: TCBptr.w.r
         is_dc;                                      // adddc/subdc: dst digits
 
     // adddc/subdc/subrdc (NEC V60 manual ADDDC p.7-6, SUBDC p.7-107, SUBRDC; MAME
@@ -612,6 +659,8 @@ module v60 (
     logic [31:0] xcp_oldpsw, xcp_vecaddr, xcp_tgt;
     logic [31:0] xcp_code;
     logic        xcp_irq;             // 1 = external interrupt entry
+    logic        xcp_parm;            // chlvl: an exception parameter word
+    logic [31:0] xcp_parw;            // is pushed above the code word
     logic [2:0]  xcp_vecq;
     logic        dvx_ph;              // divux mem writeback phase (0=quot)
 
@@ -689,21 +738,21 @@ module v60 (
     // branch displacement (F4a/F4b at byte 1); F6 disp16 at byte 2
     logic [31:0] disp_f4, disp_f6;
     assign disp_f4 = (ft_q == 4'd4)
-        ? {{24{iw[103]}}, iw[103:96]}
-        : {{16{iw[95]}}, iw[95:88], iw[103:96]};
-    assign disp_f6 = {{16{iw[87]}}, iw[87:80], iw[95:88]};
+        ? {{24{iw[167]}}, iw[167:160]}
+        : {{16{iw[159]}}, iw[159:152], iw[167:160]};
+    assign disp_f6 = {{16{iw[151]}}, iw[151:144], iw[159:152]};
 
     // F7a length-extension bytes: at 2+l1 and 3+l1+l2
-    logic [111:0] iw_e1, iw_e2;
+    logic [175:0] iw_e1, iw_e2;
     assign iw_e1 = iw << ((6'd2 + {1'b0, l1_q}) * 8);
     assign iw_e2 = iw << ((6'd3 + {1'b0, l1_q} + {1'b0, l2_q}) * 8);
-    assign ext1_b = iw_e1[111:104];
-    assign ext2_b = iw_e2[111:104];
+    assign ext1_b = iw_e1[175:168];
+    assign ext2_b = iw_e2[175:168];
     // F7c's one extension byte follows both operands (2+l1+l2): insbf's blen
-    logic [111:0] iw_e3;
+    logic [175:0] iw_e3;
     logic [7:0]   ext3_b, bf_ext;
     assign iw_e3 = iw << ((6'd2 + {1'b0, l1_q} + {1'b0, l2_q}) * 8);
-    assign ext3_b = iw_e3[111:104];
+    assign ext3_b = iw_e3[175:168];
     assign bf_ext = is_bf_ins ? ext3_b : ext1_b;
 
     assign fetch_pc = pc;
@@ -791,15 +840,19 @@ module v60 (
                     mem_wdata = (exec_q == 8'd37) ? op1_val
                                                   : pc + {26'd0, len_q};
                 end
-                if (is_dvx_op && op2_ismem) begin
-                    // divx/divux memory form: read dividend low dword
+                if (is_pair_op && op2_ismem) begin
+                    // divx/divux memory form: read dividend low dword;
+                    // mulx/mulux: the multiplicand word
                     mem_re = 1'b1; mem_addr = op2_ea_q; mem_size = 3'd4;
                 end
             end
             S_DVX_RD: begin
                 // dividend high dword; lands on mem_rdata during the
-                // muldiv start cycle (a_hi mux above)
-                mem_re = 1'b1; mem_addr = op2_ea_q + 32'd4; mem_size = 3'd4;
+                // muldiv start cycle (a_hi mux above). Not for mulx/mulux,
+                // whose memory destination is only read for its low word.
+                if (is_dvx_op) begin
+                    mem_re = 1'b1; mem_addr = op2_ea_q + 32'd4; mem_size = 3'd4;
+                end
             end
             S_DVX_WB: begin
                 if (op2_ismem) begin
@@ -845,20 +898,43 @@ module v60 (
             S_XCP_VEC: begin
                 mem_re = 1'b1; mem_addr = xcp_vecaddr; mem_size = 3'd4;
             end
+            // Exception frame (NEC manual Fig. 8-3, Table p.8-17), from the
+            // top: [parameter,] code|count, PSW, PC. chlvl's parameter sits
+            // above the code word, so its other three pushes move down 4.
             S_XCP_P1: begin
                 ra_a = 5'd31;
-                mem_we = 1'b1; mem_addr = rd_a - 32'd4; mem_size = 3'd4;
+                mem_we = 1'b1; mem_size = 3'd4;
+                mem_addr = rd_a - 32'd4 - (xcp_parm ? 32'd4 : 32'd0);
                 mem_wdata = xcp_irq ? xcp_oldpsw : xcp_code;
             end
             S_XCP_P2: begin
                 ra_a = 5'd31;
-                mem_we = 1'b1; mem_addr = rd_a - 32'd8; mem_size = 3'd4;
+                mem_we = 1'b1; mem_size = 3'd4;
+                mem_addr = rd_a - 32'd8 - (xcp_parm ? 32'd4 : 32'd0);
                 mem_wdata = xcp_irq ? pc : xcp_oldpsw;
             end
             S_XCP_P3: begin
                 ra_a = 5'd31;
-                mem_we = 1'b1; mem_addr = rd_a - 32'd12; mem_size = 3'd4;
+                mem_we = 1'b1; mem_size = 3'd4;
+                mem_addr = rd_a - 32'd12 - (xcp_parm ? 32'd4 : 32'd0);
                 mem_wdata = pc + {26'd0, len_q};
+            end
+            S_XCP_P4: begin                         // chlvl parameter
+                ra_a = 5'd31;
+                mem_we = 1'b1; mem_addr = rd_a - 32'd4; mem_size = 3'd4;
+                mem_wdata = xcp_parw;
+            end
+            S_TK_RD: begin                          // ldtask: next TCB word
+                if (tk_idx < 6'd36 && tk_mask[tk_idx]) begin
+                    mem_re = 1'b1; mem_addr = tk_ptr; mem_size = 3'd4;
+                end
+            end
+            S_TK_WR: begin                          // sttask: next TCB word
+                ra_a = 5'(tk_idx - 6'd5);
+                if (tk_idx < 6'd36 && tk_mask[tk_idx]) begin
+                    mem_we = 1'b1; mem_addr = tk_ptr; mem_size = 3'd4;
+                    mem_wdata = (tk_idx < 6'd5) ? preg_rdata : rd_a;
+                end
             end
             S_STR_LEN1: if (ext1_b[7]) ra_a = ext1_b[4:0];
             S_STR_LEN2: if (ext2_b[7]) ra_a = ext2_b[4:0];
@@ -942,7 +1018,7 @@ module v60 (
 
     always_ff @(posedge clk) begin
         wen <= 1'b0; psw_wen <= 1'b0; flags_wen <= 1'b0;
-        preg_wen <= 1'b0; md_start <= 1'b0;
+        preg_wen <= 1'b0; md_start <= 1'b0; pw_ovr_q <= 1'b0;
 
         nmi_q <= nmi;
         if (nmi && !nmi_q) nmi_pend <= 1'b1;      // edge latch (any state)
@@ -955,6 +1031,7 @@ module v60 (
             nmi_pend <= 1'b0;
             nmi_busy <= 1'b0;
             xcp_nmi <= 1'b0;
+            xcp_parm <= 1'b0;
         end else if (wait_hold) begin
             // bus wait: everything stays exactly as-is (the one-shot
             // strobes wen/psw_wen/... already cleared above)
@@ -1165,7 +1242,8 @@ module v60 (
                             8'd56, 8'd57: begin     // mul/div + rem/remu
                                 md_start <= 1'b1; state <= S_MD_WAIT;
                             end
-                            8'd54, 8'd60: begin     // divux / divx
+                            8'd54, 8'd60, 8'd80, 8'd81: begin
+                                // divux / divx / mulx / mulux
                                 if (!op2_isreg)     // memory form: pair in
                                     state <= S_DVX_RD;  // memory (low read
                                                         // issued comb)
@@ -1285,6 +1363,78 @@ module v60 (
                                     pc <= next_seq_pc; state <= S_FETCH;
                                 end
                             end
+                            8'd77: begin                // chlvl
+                                // NEC manual CHLVL p.7-18, change-level
+                                // exceptions p.8-11, exception processing
+                                // p.8-3. The new level must be 0-3 and not
+                                // less privileged than the current one,
+                                // else Illegal Data Field, which the core
+                                // does not model: it stops (S_TRAP, op F2)
+                                // rather than run on wrongly.
+                                if (op1_val[7:0] > 8'd3 ||
+                                    op1_val[1:0] > psw[25:24]) begin
+                                    trap <= 1'b1; trap_op <= 8'hF2;
+                                    state <= S_TRAP;
+                                end else begin
+                                    // EL <- level; EM, TP, AE, TE cleared;
+                                    // ASA set; IE and IS UNCHANGED (p.8-3:
+                                    // only interrupts clear IE, and an
+                                    // exception taken on the interrupt
+                                    // stack stays on it, Note 4). So the
+                                    // frame lands on L<level>SP, or on the
+                                    // ISP when IS is set. MAME's
+                                    // update_psw_for_exception also clears
+                                    // IE here; the manual is followed
+                                    // (docs/OPEN-QUESTIONS.md Q52).
+                                    xcp_oldpsw <= psw;
+                                    psw_wen <= 1'b1;
+                                    psw_wdata <= (psw & ~32'h2B03_0000)
+                                               | {6'd0, op1_val[1:0], 24'd0}
+                                               | 32'h8000_0000;   // PSW.ASA
+                                    xcp_vecaddr <= (preg_rdata & ~32'hFFF)
+                                        + ((32'd24 + {30'd0, op1_val[1:0]}) << 2);
+                                    // code word (0x1800 + 0x100*level)<<16,
+                                    // parameter count 8 (Table 8-1, p.8-17)
+                                    xcp_code <= {6'b000110, op1_val[1:0],
+                                                 8'd0, 16'd8};
+                                    // the arg, zero-extended to a word
+                                    xcp_parm <= 1'b1;
+                                    xcp_parw <= {24'd0, op2_val[7:0]};
+                                    xcp_irq <= 1'b0;
+                                    state <= S_XCP_VEC;
+                                end
+                            end
+                            8'd78: begin                // ldtask
+                                // list = op1, TCB pointer = op2 (a value:
+                                // "TCBptr.w.r", p.7-53). TR <- pointer;
+                                // PSW.IS cleared, so L0SP (or the EL's
+                                // stack) is the stack again ("if the
+                                // current context is using the interrupt
+                                // stack, L0SP will become the new stack
+                                // pointer"); then TKCW, the SPSI stacks and
+                                // the listed registers are loaded.
+                                psw_wen <= 1'b1;
+                                psw_wdata <= psw & ~32'h1000_0000;
+                                preg_wen <= 1'b1; preg_wdata <= op2_val;
+                                pw_ovr_q <= 1'b1; pw_sel_q <= 4'd6;    // TR
+                                tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
+                                tk_idx <= 6'd0; tk_ptr <= op2_val;
+                                state <= S_TK_RD;
+                            end
+                            8'd79: begin                // sttask
+                                // Saves the context to the TCB at TR
+                                // (preg port: TR in this state). "The ISP
+                                // becomes the current stack pointer during
+                                // the execution of the STTASK instruction"
+                                // (p.7-104): PSW.IS is set, and stays set
+                                // until the ldtask that follows clears it
+                                // (MAME opSTTASK does the same).
+                                psw_wen <= 1'b1;
+                                psw_wdata <= psw | 32'h1000_0000;
+                                tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
+                                tk_idx <= 6'd0; tk_ptr <= preg_rdata;
+                                state <= S_TK_WR;
+                            end
                             8'd46: begin                // retis
                                 nmi_busy <= 1'b0;       // NMI window
                                 state <= S_RETIS1;      // reopens
@@ -1352,10 +1502,10 @@ module v60 (
                     // next start.
                     if (!md_busy && !md_start) begin
                         flags_wen <= 1'b1; flags_wdata <= md_fo;
-                        if (is_dvx_op) begin
+                        if (is_pair_op) begin
                             if (op2_isreg) begin
                                 wen <= 1'b1; waddr <= op2_reg_q;
-                                wdata <= md_res;    // quotient -> Rn
+                                wdata <= md_res;    // quotient/low -> Rn
                             end
                             dvx_ph <= 1'b0;
                             state <= S_DVX_WB;
@@ -1453,10 +1603,55 @@ module v60 (
                         state <= S_XCP_P3;
                 end
                 S_XCP_P3: begin
-                    wen <= 1'b1; waddr <= 5'd31;    // SP -= 12
-                    wdata <= rd_a - 32'd12;
+                    if (xcp_parm)                   // chlvl: one more push
+                        state <= S_XCP_P4;
+                    else begin
+                        wen <= 1'b1; waddr <= 5'd31;    // SP -= 12
+                        wdata <= rd_a - 32'd12;
+                        pc <= xcp_tgt;
+                        state <= S_FETCH;
+                    end
+                end
+                S_XCP_P4: begin                     // parameter pushed
+                    wen <= 1'b1; waddr <= 5'd31;    // (comb): SP -= 16
+                    wdata <= rd_a - 32'd16;
+                    xcp_parm <= 1'b0;
                     pc <= xcp_tgt;
                     state <= S_FETCH;
+                end
+
+                // ------------------------------------- ldtask / sttask
+                S_TK_RD: begin
+                    if (tk_mask == 36'd0) begin
+                        pc <= next_seq_pc; state <= S_FETCH;
+                    end else if (tk_mask[tk_idx])
+                        state <= S_TK_CONSUME;      // read in flight
+                    else
+                        tk_idx <= tk_idx + 6'd1;
+                end
+                S_TK_CONSUME: begin
+                    if (tk_idx < 6'd5) begin        // TKCW or a stack
+                        preg_wen <= 1'b1; preg_wdata <= mem_rdata;
+                        pw_ovr_q <= 1'b1; pw_sel_q <= tk_psel(tk_idx);
+                    end else begin                  // R0..R30
+                        wen <= 1'b1; waddr <= 5'(tk_idx - 6'd5);
+                        wdata <= mem_rdata;
+                    end
+                    tk_mask[tk_idx] <= 1'b0;
+                    tk_ptr <= tk_ptr + 32'd4;
+                    tk_idx <= tk_idx + 6'd1;
+                    state <= S_TK_RD;
+                end
+                S_TK_WR: begin
+                    if (tk_mask == 36'd0) begin
+                        pc <= next_seq_pc; state <= S_FETCH;
+                    end else begin
+                        if (tk_mask[tk_idx]) begin  // written this cycle
+                            tk_mask[tk_idx] <= 1'b0;    // (comb): advance
+                            tk_ptr <= tk_ptr + 32'd4;
+                        end
+                        tk_idx <= tk_idx + 6'd1;
+                    end
                 end
 
                 S_STR_LEN1: begin

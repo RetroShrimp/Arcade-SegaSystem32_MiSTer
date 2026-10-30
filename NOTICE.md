@@ -35,6 +35,7 @@ Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*
 *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are
 trademarks of
 SEGA;
-*Spider-Man* is a trademark of Marvel. This is an unaffiliated
+*Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of
+Capcom. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled
 to.

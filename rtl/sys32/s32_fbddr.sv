@@ -21,12 +21,21 @@
 //               so one coalescer serves both: 4 pixels per 64-bit beat,
 //               consecutive beats gathered into one burst.
 //   shadow_rmw  clears bit 15 of stored pixels. It needs the stored word, so
-//               it is a full barrier plus a DDR round trip. Shadow writes to
-//               the same 64-bit beat merge into one RMW while it is still
-//               pending (sh_mask), so a shadow sprite's row costs one round
-//               trip per 4 pixels, not per pixel (Burning Rival's floor
-//               shadows: ~3,000 shadow pixels a frame overran the sprite
-//               frame budget at one RMW each, board bench SPRDEADLINE).
+//               it is a full barrier plus a DDR round trip. Shadow writes
+//               gather per aligned 16-beat (64-pixel) block: every shadow
+//               write into the open block, in any order, only sets its bit in
+//               a 64-lane mask (sh_m). The block closes on the first write
+//               it cannot take (a pixel, or a shadow in another block), on
+//               IDLE_SEAL idle clocks, or when the scan needs its bank; then
+//               one burst reads the beats it touched, and one burst writes
+//               them back with the masked lanes' bit 15 cleared. So a shadow
+//               sprite's row costs one round trip per 64 pixels.
+//               History: one RMW per pixel overran Burning Rival's floor
+//               shadows (~3,000 px a frame); one per 4-pixel beat still
+//               overran Slip Stream's title fade, a full-screen shadow sprite
+//               (93,184 shadow px a frame: 23,296 round trips, ~5x the frame;
+//               39 manual time-outs on the board bench, the logo missing,
+//               docs/slipstrm-bringup.md §5.3).
 //
 // Ordering: the scan reads the displayed bank while the engine draws the
 // hidden one, so they normally cannot conflict. Two cases can, and one rule
@@ -150,10 +159,24 @@ module s32_fbddr #(
     logic        run_rdy  [0:1];              // sealed, waiting for the bus
     logic        run_bank [0:1];
 
-    logic        sh_pend;
-    logic [15:0] sh_a;
-    logic [3:0]  sh_mask;                     // lanes of sh_a to clear
-    logic [63:0] sh_word;
+    // shadow block: beats {sh_blk, sh_lo..sh_hi}, lane (4 * beat + lane) of
+    // sh_m set = clear that pixel's bit 15
+    logic        sh_pend;                     // a shadow block exists
+    logic        sh_open;                     // ... and still takes writes
+    logic [11:0] sh_blk;                      // beat address [15:4]
+    logic [3:0]  sh_lo, sh_hi;                // beats touched
+    logic [63:0] sh_m;
+    logic [3:0]  sidx;                        // beat index, read and write
+    // The block's stored words. A read beat is registered first (sh_q: the
+    // f2sdram data register straight into the MLAB's write port failed hold
+    // by 0.012 ns, release fit seed 11, 2026-10-28), then written one clk
+    // later, in D_SHW or D_SHM; D_SHWR reads them (asynchronously, as
+    // run_d*). D_SHM is that last write's clk, so a word is never read on
+    // the clk it is written: no collision.
+    (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] sh_d [0:15];
+    logic [63:0] sh_q;
+    logic [3:0]  sh_qi;
+    logic        sh_qv;
 
     typedef enum logic [2:0] {
         D_IDLE, D_RD, D_RDW, D_WR, D_SHRD, D_SHW, D_SHM, D_SHWR
@@ -170,14 +193,11 @@ module s32_fbddr #(
     wire w_sh_raw   = fb_we && cen_ok &&  fb_shadow;
 
     wire same_beat  = acc_v && (w_a == acc_a);
-    // a shadow write to the beat of a pending RMW merges into it until the
-    // mask is applied: D_SHW captures the raw word, D_SHM applies sh_mask one
-    // clk later, so a merge accepted on the capture cycle still counts. Only
+    // a shadow write into the open block merges into its mask. Only
     // registered state decides (no path from the DDR handshake into fbw_ok
     // and the engine's clock enable). Nothing else can be written meanwhile:
-    // sh_pend blocks pixel writes.
-    wire sh_merge   = w_sh_raw && sh_pend && (w_a == sh_a)
-                      && (dst != D_SHM) && (dst != D_SHWR);
+    // sh_pend blocks pixel writes, and a closed block takes nothing.
+    wire sh_merge   = w_sh_raw && sh_pend && sh_open && (w_a[15:4] == sh_blk);
     wire contig     = acc_v && (w_a == acc_a + 16'd1);
     wire moving     = w_px_raw && acc_v && !same_beat;
 
@@ -211,7 +231,7 @@ module s32_fbddr #(
 
     // a pending write touches the bank the scan wants -> order them
     wire scan_conflict =
-          (sh_pend          && sh_a[15]     == rf_bank)
+          (sh_pend          && sh_blk[11]   == rf_bank)
        || (acc_v            && acc_a[15]    == rf_bank)
        || (run_n[0] != 8'd0 && run_bank[0]  == rf_bank)
        || (run_n[1] != 8'd0 && run_bank[1]  == rf_bank);
@@ -221,10 +241,12 @@ module s32_fbddr #(
     // writes spread over several FSM branches). push_now is the union of every
     // case that retires acc into run[fill]; idle_push_cond mirrors the D_IDLE
     // seal condition.
+    // (acc_v || run_n[fill] != 0): never seal an empty buffer. Before the
+    // shadow block could stay open, the D_SHRD branch always won when the
+    // filling buffer was empty; an open block now leaves that case here.
     wire idle_push_cond = (dst == D_IDLE) && !do_accept && other_free
-                          && ((rf_go && scan_conflict) || sh_pend
-                              || (idle_seal
-                                  && (acc_v || run_n[fill] != 8'd0)));
+                          && (acc_v || run_n[fill] != 8'd0)
+                          && ((rf_go && scan_conflict) || sh_pend || idle_seal);
     wire  push_now = acc_v && ((do_accept && fb_shadow)
                             || (do_accept && !fb_shadow && !same_beat)
                             || idle_push_cond);
@@ -253,6 +275,17 @@ module s32_fbddr #(
 
     wire [63:0] run_d_sel  = wsel ? run_d1 [widx[RW-1:0]] : run_d0 [widx[RW-1:0]];
     wire [7:0]  run_be_sel = wsel ? run_be1[widx[RW-1:0]] : run_be0[widx[RW-1:0]];
+
+    wire [7:0]  sh_n  = 8'(sh_hi - sh_lo) + 8'd1;    // beats in the burst
+    wire [3:0]  sh_bm = sh_m[{sidx, 2'b00} +: 4];    // this beat's lanes
+
+    always_ff @(posedge clk) begin
+        sh_qv <= (dst == D_SHW) && ddr_dout_ready;
+        sh_q  <= ddr_dout;
+        sh_qi <= sidx;
+    end
+    always_ff @(posedge clk)
+        if (sh_qv) sh_d[sh_qi] <= sh_q;
 
     // A served line request must not start again while the client still holds
     // it: a second fetch right after rf_done would be taken by the client as
@@ -287,16 +320,17 @@ module s32_fbddr #(
             end
             D_SHRD: begin
                 ddr_rd       = 1'b1;
-                ddr_addr     = FB_BASE + {13'd0, sh_a};
-                ddr_burstcnt = 8'd1;
+                ddr_addr     = FB_BASE + {13'd0, sh_blk, sh_lo};
+                ddr_burstcnt = sh_n;
             end
             D_SHWR: begin
                 ddr_we       = 1'b1;
-                ddr_addr     = FB_BASE + {13'd0, sh_a};
-                ddr_burstcnt = 8'd1;
-                ddr_din      = sh_word;
-                ddr_be       = {{2{sh_mask[3]}}, {2{sh_mask[2]}},
-                                {2{sh_mask[1]}}, {2{sh_mask[0]}}};
+                ddr_addr     = FB_BASE + {13'd0, sh_blk, sh_lo};
+                ddr_burstcnt = sh_n;
+                ddr_din      = sh_d[sidx] & ~{sh_bm[3], 15'd0, sh_bm[2], 15'd0,
+                                              sh_bm[1], 15'd0, sh_bm[0], 15'd0};
+                ddr_be       = {{2{sh_bm[3]}}, {2{sh_bm[2]}},
+                                {2{sh_bm[1]}}, {2{sh_bm[0]}}};
             end
             default: ;
         endcase
@@ -320,6 +354,7 @@ module s32_fbddr #(
             fill      <= 1'b0;
             wsel      <= 1'b0;
             sh_pend   <= 1'b0;
+            sh_open   <= 1'b0;
             idle_cnt  <= 5'd0;
             rf_seen   <= 1'b0;
             for (i = 0; i < 2; i = i + 1) begin
@@ -333,16 +368,29 @@ module s32_fbddr #(
 
             if (!rf_req) rf_seen <= 1'b0;
 
+            // Close the shadow block on the first write it cannot take (that
+            // write is refused and waits for the RMW), when the engine goes
+            // quiet, or when the scan needs its bank.
+            if (sh_pend && sh_open
+                && ((fb_we && cen_ok && !sh_merge) || idle_seal
+                    || (rf_go && scan_conflict)))
+                sh_open <= 1'b0;
+
             // =================================================== accept
             if (do_accept && fb_shadow && sh_pend) begin
-                // merge into the pending RMW (sh_merge: same beat, not read)
-                sh_mask[w_lane] <= 1'b1;
+                // merge into the open block (sh_merge)
+                sh_m[{w_a[3:0], w_lane}] <= 1'b1;
+                if (w_a[3:0] < sh_lo) sh_lo <= w_a[3:0];
+                if (w_a[3:0] > sh_hi) sh_hi <= w_a[3:0];
             end else if (do_accept && fb_shadow) begin
                 // Barrier. Retire whatever is gathering so the RMW cannot pass
                 // an older write to the same word, then block until it lands.
                 sh_pend <= 1'b1;
-                sh_a    <= w_a;
-                sh_mask <= 4'b0001 << w_lane;
+                sh_open <= 1'b1;
+                sh_blk  <= w_a[15:4];
+                sh_lo   <= w_a[3:0];
+                sh_hi   <= w_a[3:0];
+                sh_m    <= 64'd1 << {w_a[3:0], w_lane};
                 if (acc_v) begin
                     run_n[fill] <= run_n[fill] + 8'd1;   // data: push_now above
                     acc_v       <= 1'b0;
@@ -386,7 +434,8 @@ module s32_fbddr #(
                         rd_wide <= rf_wide;
                         dst     <= D_RD;
                     end
-                    else if (go && sh_pend && all_quiet && !have_run) begin
+                    else if (go && sh_pend && !sh_open && all_quiet && !have_run) begin
+                        sidx      <= sh_lo;
                         dst       <= D_SHRD;
                     end
                     else if (go && have_run) begin
@@ -446,22 +495,24 @@ module s32_fbddr #(
                 D_SHRD:
                     if (!ddr_busy) dst <= D_SHW;
 
-                D_SHW:
+                D_SHW:                               // sh_q takes the beat
                     if (ddr_dout_ready) begin
-                        sh_word   <= ddr_dout;           // raw; D_SHM masks it
-                        dst       <= D_SHM;
+                        if (sidx == sh_hi) begin
+                            sidx <= sh_lo;
+                            dst  <= D_SHM;
+                        end else
+                            sidx <= sidx + 4'd1;
                     end
 
-                D_SHM: begin
-                    sh_word <= sh_word & ~{sh_mask[3], 15'd0, sh_mask[2], 15'd0,
-                                           sh_mask[1], 15'd0, sh_mask[0], 15'd0};
-                    dst     <= D_SHWR;
-                end
+                D_SHM: dst <= D_SHWR;                // the last beat lands
 
-                D_SHWR:
+                D_SHWR:                              // masked on the way out
                     if (!ddr_busy) begin
-                        sh_pend <= 1'b0;
-                        dst <= D_IDLE;
+                        if (sidx == sh_hi) begin
+                            sh_pend <= 1'b0;
+                            dst <= D_IDLE;
+                        end else
+                            sidx <= sidx + 4'd1;
                     end
 
                 default: dst <= D_IDLE;

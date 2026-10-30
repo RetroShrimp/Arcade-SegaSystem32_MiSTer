@@ -13,6 +13,12 @@
 //          CY preserved; S/Z from dst afterwards
 //   divu : unsigned quotient; OV = 0; divisor 0 leaves dst unchanged;
 //          CY preserved; S/Z from dst afterwards
+//   mulx / mulux (mode_mlx, with mul / mulu at word width): the whole
+//          64-bit product, low word on result, high word on rem_out (the
+//          sequencer writes them to Rn / Rn+1 as divux's pair). NEC manual
+//          p.7-67/68: CY unchanged, OV CLEARED, S = bit 63, Z = all 64 bits
+//          zero. MAME's opMULX/opMULUX set S and Z the same way but leave
+//          OV untouched; the manual is followed (docs/slipstrm-bringup.md §4)
 //
 // Iterative: shift-add multiply / restoring divide, one bit per cycle,
 // <width>+2 cycles, like a sequential unit of the period (a 32-bit op is
@@ -31,6 +37,7 @@ module v60_muldiv (
     input  logic [31:0] b,         // source (multiplier / divisor)
     input  logic [31:0] a_hi,      // divux: dividend high word
     input  logic        mode_dvx,  // divux: unsigned 64/32 with remainder
+    input  logic        mode_mlx,  // mulx/mulux: 64-bit product, both halves
     input  logic        mode_rem,  // rem/remu: result = remainder of the
                                    // div/divu iteration (sign of the
                                    // DIVIDEND when signed; MAME opREM*)
@@ -52,7 +59,7 @@ module v60_muldiv (
     logic [4:0]  opr;
     logic [1:0]  wr;
     logic [3:0]  fin;
-    logic        dvx, remr;
+    logic        dvx, remr, mlx;
     logic [31:0] a_in, b_in, ahi_in;
 
     // decode of captured width
@@ -122,6 +129,7 @@ module v60_muldiv (
                     ahi_in <= a_hi;
                     dvx   <= mode_dvx;
                     remr  <= mode_rem;
+                    mlx   <= mode_mlx;
                     busy  <= 1'b1;
                     state <= S_INIT;
                 end
@@ -218,6 +226,7 @@ module v60_muldiv (
                     end else begin
                         prod = neg_res ? (~acc + 64'd1) : acc;
                         r = prod[31:0] & mask;
+                        rem_out <= prod[63:32];         // mulx/mulux high word
                         // OV per NEC manual: double-length product not
                         // representable at width. Signed: full product must
                         // equal the sign extension of the width result;
@@ -227,7 +236,10 @@ module v60_muldiv (
                         sres = {32'd0, r};
                         if ((opr == OP_MUL) && r[msb])
                             sres = sres | (~64'd0 << bits);
-                        flags_out <= {fin[3], prod != sres, r[msb], r == 32'd0};
+                        if (mlx)
+                            flags_out <= {fin[3], 1'b0, prod[63], prod == 64'd0};
+                        else
+                            flags_out <= {fin[3], prod != sres, r[msb], r == 32'd0};
                     end
                     result <= r;
                     busy   <= 1'b0;
