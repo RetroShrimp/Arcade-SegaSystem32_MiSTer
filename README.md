@@ -1,12 +1,12 @@
-# Sega System 32 for MiSTer
+# Sega System 32 for MiSTer FPGA
 
 An FPGA recreation of Sega's **System 32** arcade board for the
 [MiSTer](https://mister-devel.github.io/MkDocs_MiSTer/) platform, built
 around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
-Hedgehog**, **Rad Mobile** and Capcom's **Slip Stream**, which use the same
-board.
+Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream** and **Alien3: The
+Gun**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -42,6 +42,9 @@ it is the first FPGA implementation of that CPU.
 | `Rad Mobile (US).mra` | `radmu` | runs in simulation; not yet tested on hardware |
 | `Slip Stream.mra` | `slipstrm` | tested on hardware |
 | `Slip Stream (Hispanic).mra` | `slipstrmh` | not yet tested on hardware |
+| `Alien3 - The Gun.mra` | `alien3` | tested on hardware |
+| `Alien3 - The Gun (US).mra` | `alien3u` | not yet tested on hardware |
+| `Alien3 - The Gun (Japan).mra` | `alien3j` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -69,7 +72,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `svs.zip`), `arabfgt.zip` (plus `arabfgtu.zip` or `arabfgtj.zip`),
    `brival.zip` (plus `brivalj.zip`), `darkedge.zip` (plus
    `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), `radm.zip`
-   (plus `radmu.zip`), and `slipstrm.zip` (plus `slipstrmh.zip`).
+   (plus `radmu.zip`), `slipstrm.zip` (plus `slipstrmh.zip`), and
+   `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -136,6 +140,16 @@ lever: one press per change of gear, and it stays where it is thrown, as the
 cabinet's does. Start is Start and Coin is Select; Service and Test have no
 default. A game costs two credits. The game runs 416 pixels wide in its
 menus and 320 wide in its races, and switches between them as it goes.
+
+**Alien3: The Gun** is played with two mounted guns, whose aim the board
+reads through the same A/D converter. Each player's left analog stick points
+that player's gun, and a USB lightgun set to report its aim as an analog
+stick does the same. The D-pad, and for player 1 a USB mouse, also move the
+aim, which then stays where it is left, as a mounted gun does; the stick
+takes the aim back as soon as it moves. Fire (the trigger) is A and Bomb
+(the gun's button) B; Coin is Select. There are no start buttons: insert coins and pull a
+trigger. Each player has a Service button (no default), and the game's
+service mode has a GUN ADJUSTMENT screen that calibrates the guns.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -345,6 +359,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

@@ -3,7 +3,8 @@
 // buffer (s32_board connects those to SDRAM and DDR3).
 //
 // Clocking: one clk (64.4318 MHz = 2x the 32.2159 MHz board crystal) with
-// clock enables: cen16 = clk/4 = 16.108 MHz exactly (V60 and its bus unit),
+// clock enables: cen16 = clk/4 = 16.108 MHz exactly (V60 and its bus unit;
+// it briefly runs at clk/2 to repay SDRAM-emulation waits, see below),
 // cen_z80 = clk/8 = 8.054 MHz exactly (Z80 and both YM3438s), and
 // fractional accumulators for the 50 MHz crystal's family: cen_pcm ~12.5
 // MHz, cen_pix ~6.25 MHz, and the V25 at 10 MHz. Running everything in one
@@ -197,6 +198,8 @@ module s32_sys (
     // rest of the machine sees the real part's 16-bit T1-T3 bus cycles on
     // the b60_* wires.
     logic         bcu_busy;
+    logic         bcu_run, bcu_tw, bcu_done;   // V60 clock wait-debt (below)
+    logic         bus_wait_emul;
     logic         bcu_pend;      // bus unit has a strobe queued (FD1149 model)
     logic         b60_re, b60_we;
     logic [31:0]  b60_addr, b60_wdata, b60_rdata;
@@ -286,7 +289,8 @@ module s32_sys (
         .pf_rdata(pf_rdata), .pf_done(pf_done),
         .f_re(b60_re), .f_we(b60_we), .f_addr(b60_addr),
         .f_wdata(b60_wdata), .f_size(b60_size), .f_fetch(b60_fetch),
-        .f_rdata(b60_rdata), .f_hold(bus_hold), .f_pend(bcu_pend)
+        .f_rdata(b60_rdata), .f_hold(bus_hold), .f_pend(bcu_pend),
+        .st_run(bcu_run), .st_tw(bcu_tw), .st_done(bcu_done)
     );
 
     // ------------------------------------------------------ bus fabric
@@ -322,24 +326,73 @@ module s32_sys (
     logic [7:0]  ic_wdata, ic_rdata;
 
     // V60 clock: cen16 = clk/4 = the real 16.10795 MHz CPU clock (the
-    // 32.2159 MHz crystal / 2). The core steps only on cen16, so its
-    // outputs have four clk periods to settle (S32.sdc relies on this). The
-    // bus unit registers everything the fabric sees, so the fabric's
-    // v60_ph phase input is tied 1.
+    // 32.2159 MHz crystal / 2). The core steps only on cen16. The bus unit
+    // registers everything the fabric sees, so the fabric's v60_ph phase
+    // input is tied 1.
+    //
+    // Wait-debt recovery (2026-10-30, docs/alien3-bringup.md §6.2). Where
+    // the board emulates a memory in SDRAM (program ROM refills, the VRAM
+    // cache) a bus cycle can wait in T3 although the real EPROMs and VRAM
+    // answer inside it; the ideal-memory bench (sim/s32_sys) never waits
+    // there. Each such TW slot is charged as 4 clk of V60 time owed, and
+    // the slot after it in the same bus cycle too (the fabric's tail after
+    // the refill). The debt is repaid while the bus unit is idle by
+    // stepping the counter by 2 (cen16 every 2 clk, the spacing S32.sdc's
+    // V60 setup-2 exception already claims), 1 clk of debt per clk, so the
+    // V60 runs as many cen16 slots per frame as with ideal memories, never
+    // more, at most WDEBT_MAX clk (~16 us) behind real time. Bus cycles
+    // themselves always run at the nominal rate, so every fabric latency
+    // the ideal bench has is kept. With no emulated wait the debt stays 0
+    // and the clock is the plain clk/4 divider.
+    //
+    // All registered: the bus unit's run changes only on a cen16 edge, so
+    // a clk with no cen16 tells the next clk's run, and cen16 itself is
+    // precomputed from next-clk state.
+    localparam logic [9:0] WDEBT_MAX = 10'd1020;
     logic [1:0] c16cnt;
     logic       cen16;
+    logic       wd_rec;                  // this clk steps the divider by 2
+    logic [9:0] wdebt;                   // clk of V60 time owed
+    logic       wd_cyc;                  // this bus cycle has been charged
+    wire        wd_charge = bcu_tw && (bus_wait_emul || wd_cyc)
+                            && (wdebt <= WDEBT_MAX - 10'd4);
+    wire [2:0]  c16_sum   = {1'b0, c16cnt} + (wd_rec ? 3'd2 : 3'd1);
+    wire [9:0]  wdebt_n   = wd_charge ? wdebt + 10'd4
+                          : wd_rec    ? wdebt - 10'd1 : wdebt;
+    wire        wd_rec_n  = (wdebt_n != 10'd0) && !bcu_run && !cen16;
     always_ff @(posedge clk) begin
-        if (rst) c16cnt <= 2'd0;
-        else     c16cnt <= c16cnt + 2'd1;
+        if (rst) begin
+            c16cnt <= 2'd0; cen16 <= 1'b0; wd_rec <= 1'b0;
+            wdebt  <= 10'd0; wd_cyc <= 1'b0;
+        end else begin
+            c16cnt <= c16_sum[1:0];
+            wd_rec <= wd_rec_n;
+            cen16  <= ({1'b0, c16_sum[1:0]} + (wd_rec_n ? 3'd2 : 3'd1)) >= 3'd4;
+            wdebt  <= wdebt_n;
+            if (bcu_done)       wd_cyc <= 1'b0;
+            else if (wd_charge) wd_cyc <= 1'b1;
+        end
     end
-    assign cen16 = (c16cnt == 2'd3);
+`ifndef SYNTHESIS
+    // bench telemetry (+BUSWAIT): slots charged, clk repaid, debt high
+    // water mark, slots left unpaid because the debt was at its cap
+    integer wd_n_charge = 0, wd_n_rec = 0, wd_n_cap = 0;
+    logic [9:0] wd_peak = 10'd0;
+    always @(posedge clk) if (!rst) begin
+        if (wd_charge) wd_n_charge <= wd_n_charge + 1;
+        if (wd_rec)    wd_n_rec    <= wd_n_rec + 1;
+        if (bcu_tw && (bus_wait_emul || wd_cyc) && !wd_charge)
+            wd_n_cap <= wd_n_cap + 1;
+        if (wdebt > wd_peak) wd_peak <= wdebt;
+    end
+`endif
 
     s32_v60bus u_bus (
         .v60_ph(1'b1),
         .clk(clk), .rst(rst),
         .mem_re(b60_re), .mem_we(b60_we), .mem_addr(b60_addr),
         .mem_wdata(b60_wdata), .mem_size(b60_size), .mem_fetch(b60_fetch),
-        .mem_rdata(b60_rdata), .bus_hold(bus_hold),
+        .mem_rdata(b60_rdata), .bus_hold(bus_hold), .wait_emul(bus_wait_emul),
         .romd_pc(romd_pc), .romd_bytes(romd_bytes),
         .romd_hold(romd_hold),
         .romf_pc(romf_pc), .romf_bytes(romf_bytes), .romf_hold(romf_hold),

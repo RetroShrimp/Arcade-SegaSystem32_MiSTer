@@ -81,7 +81,14 @@ module v60_bcu (
     // a strobe is queued: it goes out on the first clk f_hold is low. Lets
     // another bus master (Dark Edge's FD1149 model in s32_v60bus) take the
     // bus without racing a strobe: with f_pend low there is none this edge.
-    output logic        f_pend
+    output logic        f_pend,
+
+    // ---- status for the clock's wait-debt recovery (s32_sys): a
+    //      transaction is in flight; this cen16 slot is a T3 wait (TW);
+    //      the current bus cycle's fabric service is complete
+    output logic        st_run,
+    output logic        st_tw,
+    output logic        st_done
 );
 
     // ----------------------------------------------------- client select
@@ -187,6 +194,9 @@ module v60_bcu (
     assign pf_done  = finishing && serving_fetch;
 
     assign f_pend = pend_stb;
+    assign st_run  = run;
+    assign st_tw   = run && cen16 && (tst == T3) && !done_q;
+    assign st_done = done_q;
     assign f_re = f_stb && !t_we;
     assign f_we = f_stb && t_we;
     assign f_fetch = serving_fetch;   // valid while run (the fabric samples

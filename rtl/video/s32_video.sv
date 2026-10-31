@@ -429,7 +429,7 @@ module s32_video (
 
     // the frame's width (see the timing block): $31FF00 bit 15 at the last
     // dot of the last visible line, so the raster switches during vblank and
-    // the per-frame zoom set-up (bf_zinit, the first dot of line VVIS) sees
+    // the per-frame zoom set-up (bf_zinit, the first dot of line VTOTAL-2) sees
     // the new width. Reset: 320, as MAME's screen is until the first update.
     always_ff @(posedge clk)
         if (rst) wide <= 1'b0;
@@ -874,7 +874,7 @@ module s32_video (
     //     a 3-dot margin.
     //
     // Drive the cores straight off the scanout beam: per frame restore
-    // the zoom divider (bf_zinit at vblank top); per visible line, at a LEAD
+    // the zoom divider (bf_zinit near vblank's end); per visible line, at a LEAD
     // point in the preceding HBLANK, pulse bf_ls with bf_line = that line,
     // take one settle dot (the first VRAM word lands), then stream bf_pix
     // once per dot so the cores present pen(bf_col) — the mixer taps that
@@ -948,7 +948,19 @@ module s32_video (
         end else begin
             bf_zinit <= 1'b0; bf_ls <= 1'b0; bf_pix <= 1'b0; bf_cen <= 1'b0;
             if (cen_pix) begin
-                if (vcnt == 9'(VVIS) && hcnt == 9'd0) bf_zinit <= 1'b1;
+                // The NBG0/1 per-frame set-up (pages, scroll start, zoom
+                // steps, flips) is taken at the start of line VTOTAL-2, after
+                // the game's vblank handler has written the registers, and a
+                // line before the first row transfer (dot 64 of VTOTAL-1).
+                // At vblank top it missed every vblank write for a frame,
+                // while the live layer enables took them at once: Alien3's
+                // title enables NBG0 and moves it to a new page in one
+                // vblank, and drew a frame of the new scroll over the old
+                // page (a doubled "ALIEN 3", owner camera clip 2026-10-30;
+                // not on a real board, not in MAME, which draws each frame
+                // with the registers left at its end; docs/alien3-bringup.md
+                // §6.3). The chip's own sample point is undocumented (Q54).
+                if (vcnt == 9'(VTOTAL - 2) && hcnt == 9'd0) bf_zinit <= 1'b1;
                 // fetch fires in the HBLANK preceding each VISIBLE line only:
                 // the upcoming line is vcnt+1 (wrapping to 0 at the last raster
                 // line). Firing during the 38 vblank lines would over-advance

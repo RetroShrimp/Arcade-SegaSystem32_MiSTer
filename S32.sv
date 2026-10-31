@@ -408,6 +408,12 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          bit 0: the cabinet's two-position gear lever on P1_A bit 0 in
 //          place of Light and Wiper, which are not fitted (MAME
 //          INPUT_PORTS_START(slipstrm), (radr); docs/slipstrm-bringup.md)
+//   byte 1 bit 2  gun harness (Alien3), with bit 0: two positional guns on
+//          the A/D board, P1 X/Y on channels 0/1 and P2 X/Y on 2/3; each
+//          gun's trigger and button on its P1_A/P2_A bits 0/1; SERVICE12
+//          bit 2 COIN2, bit 3 COIN1, bit 4 the second service button, no
+//          start buttons (MAME INPUT_PORTS_START(alien3);
+//          docs/alien3-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -460,11 +466,17 @@ always @(posedge clk_sys) begin
 	gear_btn_q <= joystick_0[6];
 	if (joystick_0[6] & ~gear_btn_q) gear_lever <= ~gear_lever;
 end
-wire [7:0] in_p1 = (adc_board & gear_harness) ? ~{7'd0, gear_lever}
+// Gun harness (board_cfg2[2], Alien3): each gun's trigger (pad button 1) on
+// bit 0 of its player's port and its button (pad button 2) on bit 1; bits
+// 2-7 unused (MAME INPUT_PORTS_START(alien3)). The guns' aim is below.
+wire gun_harness = adc_board & board_cfg2[2];
+wire [7:0] in_p1 = gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
+                 : (adc_board & gear_harness) ? ~{7'd0, gear_lever}
                  : adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
                  : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
                              : pad(joystick_0);
-wire [7:0] in_p2 = adc_board ? 8'hFF
+wire [7:0] in_p2 = gun_harness ? ~{6'd0, joystick_1[5], joystick_1[4]}
+                 : adc_board ? 8'hFF
                  : trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
 // Six-button harness (board_cfg[3], Burning Rival): EXTRA2 carries buttons
 // 4-6 of players 1 and 2 in MAME INPUT_PORTS_START(brival)'s bit order,
@@ -513,7 +525,16 @@ always @(posedge clk_sys) begin
 end
 wire test_btn = |osd_test_cnt | joystick_0[10] | joystick_1[10];
 
-wire [7:0] in_service12 = ~{
+// The gun cabinet (Alien3) swaps the coin bits, has a service button per
+// player (SERVICE1 bit 0 for P1, SERVICE2 bit 4 for P2: the input test's
+// "SERVICE LEFT / RIGHT") and no start buttons: a trigger starts a credit.
+wire [7:0] in_service12 = gun_harness ? ~{
+	2'b00, 1'b0,                                  // unknown, unknown, unused
+	joystick_1[9],                                // bit4 SERVICE2 (right)
+	joystick_0[8], joystick_1[8],                 // bit3 COIN1, bit2 COIN2
+	test_btn,                                     // TEST
+	joystick_0[9]}                                // bit0 SERVICE1 (left)
+	: ~{
 	trk_board & joystick_2[7],                    // START3 (trackball board)
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
 	joystick_1[7] & ~adc_board, joystick_0[7],    // START2, START1
@@ -621,6 +642,23 @@ wire [8:0] pedal_dn = $signed(pedal_y) > 0 ? {pedal_y, 1'b0} : 9'd0;
 wire [7:0] adc_accel = joystick_0[4] ? 8'hFF : pedal_up[8] ? 8'hFF : pedal_up[7:0];
 wire [7:0] adc_brake = joystick_0[5] ? 8'hFF : pedal_dn[8] ? 8'hFF : pedal_dn[7:0];
 
+// Gun aim (gun_harness, Alien3): the two positional guns' X/Y on the four
+// A/D channels. Each gun has one aim and the control that moved last sets
+// it: the player's left stick (or a lightgun reporting as one) points it
+// exactly; the d-pad, and for P1 the mouse, move it and it stays put
+// (s32_gun_aim.sv; docs/alien3-bringup.md §3).
+wire [31:0] gun_ain;
+s32_gun_aim gun_aim
+(
+	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.dpad1(joystick_0[3:0]), .dpad2(joystick_1[3:0]),
+	.stick1(stick_0), .stick2(stick_1),
+	.mouse_ev(mouse_ev), .mouse_dx(mouse_dx), .mouse_dy(mouse_dy),
+	.ain(gun_ain)
+);
+wire [31:0] adc_ain = gun_harness ? gun_ain
+                                  : {8'hFF, adc_brake, adc_accel, adc_wheel};
+
 //////////////////////   THE MACHINE   ///////////////////////////
 
 wire        de, hblank, vblank, hs, vs, ce_pix;
@@ -656,7 +694,7 @@ s32_board board
 	.trk_dy({trk_step[5], trk_step[3], trk_step[1]}),
 	.prot_sonic(board_cfg[7]),
 	.adc_board(adc_board),
-	.adc_ain({8'hFF, adc_brake, adc_accel, adc_wheel}),
+	.adc_ain(adc_ain),
 
 	.ee_init_wen(ee_init_wen), .ee_init_addr(ee_init_addr),
 	.ee_init_data(ee_init_data),

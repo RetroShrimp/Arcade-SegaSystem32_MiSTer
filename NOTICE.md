@@ -36,6 +36,6 @@ Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*
 trademarks of
 SEGA;
 *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of
-Capcom. This is an unaffiliated
+Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled
 to.

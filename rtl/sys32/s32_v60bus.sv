@@ -53,6 +53,11 @@ module s32_v60bus (
     input  logic        mem_fetch,
     output logic [31:0] mem_rdata,
     output logic        bus_hold,
+    // the fabric is waiting on a memory the board emulates in SDRAM: a ROM
+    // adapter refill (A_ROMW) or the VRAM cache (A_SUB_W). On the real board
+    // the EPROMs and VRAM answer inside the bus cycle. s32_sys's V60 clock
+    // repays the T3 waits these cause (docs/alien3-bringup.md §6.2).
+    output logic        wait_emul,
 
     // ---- program ROM data reads: served by a data-side line
     //      adapter (a second s32_v60fetch); the fabric holds until
@@ -336,6 +341,9 @@ module s32_v60bus (
                                      // keeps it off a deep timing path
 
     assign bus_hold = (ast != A_IDLE);
+    assign wait_emul = ((ast == A_ROMW) && (q_fetch ? romf_hold : romd_hold))
+                     || ((ast == A_SUB_W) && vid_hold)
+                     ;
 
     // --------------------------------------- FD1149 flag words (brival)
     // Burning Rival carries an FD1149 security module (317-0212) on the ROM
