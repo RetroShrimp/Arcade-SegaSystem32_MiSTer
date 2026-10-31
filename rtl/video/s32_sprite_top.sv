@@ -19,6 +19,17 @@
 // The real chip's erase and draw times are not documented; status reads 1
 // (normal), or 2 while the engine is still busy at the next trigger.
 //
+// Columns 320-415 (2026-10-30, docs/radr-scoping.md §6.3, OPEN-QUESTIONS
+// Q55): a 320-wide erase leaves them as they were, so a bank shown wide
+// for the first time after a 320 stretch would show one frame of whatever
+// they held: the last wide frame's sprites, or DDR3 power-on content.
+// MAME's sprite_erase_buffer fills the whole bitmap, at any width. Each
+// bank carries a flag, set by a 416 render (and at reset), that makes its
+// next erase sweep 416 columns whatever the width; the wide sweep clears
+// it. The picture is then MAME's, at the cost of one wide sweep per bank
+// per width change. Whether the 5386 always erases its whole buffer is
+// not documented.
+//
 // Manual mode: a trigger that finds the previous render still running ends
 // it (2026-10-20, docs/svf-bringup.md 6.10, OPEN-QUESTIONS Q41). s32tech's
 // $500002 status 2 is "rendering time is over but end-of-list command not
@@ -99,6 +110,8 @@ module s32_sprite_top (
     logic [7:0]  er_y;
     logic [8:0]  er_w;
     logic        er_disp;              // erase DISPLAYED buffer (cmd 02)
+    logic        er_bank;              // bank the sweep is erasing
+    logic [1:0]  wdirty;               // per bank: x 320-415 may be dirty
     logic        ovr_hold;             // one auto tick already skipped busy
     logic        restart_pend;         // manual time-out: start after abort
 
@@ -269,6 +282,7 @@ module s32_sprite_top (
             r04_tmp <= 2'd0; r04_out <= 2'd0;
             l08 <= 2'd0; l0a <= 2'd0; l0c <= 1'b0;
             shown <= 1'b0;
+            wdirty <= 2'b11;           // DDR3 content unknown at power-on
             wst <= W_IDLE;
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
@@ -296,7 +310,10 @@ module s32_sprite_top (
                 if (eng_busy) eng_abort <= 1'b1;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
-                er_w <= r0c ? 9'd415 : 9'd319;
+                // the hidden bank after this trigger's swap, if any
+                er_w <= (r0c || wdirty[trig_swap ? shown : ~shown])
+                        ? 9'd415 : 9'd319;
+                er_bank <= trig_swap ? shown : ~shown;
                 er_disp <= 1'b0;
                 if (trig_erase_hidden) wst <= W_ERASE;
                 else if (eng_busy) begin
@@ -315,13 +332,15 @@ module s32_sprite_top (
                 eng_abort <= 1'b1;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
-                er_w <= r0c ? 9'd415 : 9'd319;
+                er_w <= (r0c || wdirty[~shown]) ? 9'd415 : 9'd319;
+                er_bank <= ~shown;
                 er_disp <= 1'b0;
                 wst <= W_ERASE;
             end else if (trig_erase_shown && wst == W_IDLE) begin
                 er_x <= 9'd0;
                 er_y <= 8'd0;
-                er_w <= r0c ? 9'd415 : 9'd319;
+                er_w <= (r0c || wdirty[shown]) ? 9'd415 : 9'd319;
+                er_bank <= shown;
                 er_disp <= 1'b1;
                 wst <= W_ERASE;
             end
@@ -331,6 +350,7 @@ module s32_sprite_top (
                 if (er_x == er_w) begin
                     er_x <= 9'd0;
                     if (er_y == 8'd223) begin
+                        if (er_w == 9'd415) wdirty[er_bank] <= 1'b0;
                         if (er_disp)
                             wst <= W_IDLE;      // cmd 02: no render
                         else begin
@@ -342,6 +362,10 @@ module s32_sprite_top (
                 end else
                     er_x <= er_x + 9'd1;
             end
+
+            // a 416 render (the engine draws into the hidden bank, and
+            // clips at 319 when 320 wide) leaves columns 320-415 dirty
+            if (wst == W_RENDER && l0c) wdirty[~shown] <= 1'b1;
 
             // render completion
             if (wst == W_RENDER && !eng_busy && !eng_start && !restart_pend)
