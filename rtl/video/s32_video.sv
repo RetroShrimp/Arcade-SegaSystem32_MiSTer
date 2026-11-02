@@ -45,9 +45,10 @@ module s32_video (
     // CPU slave port (word addressed, 16-bit)
     input  logic        cpu_sel,      // strobe, one access per pulse
     input  logic        cpu_we,
-    input  logic [1:0]  cpu_bsel,     // byte strobes: only the mixer
-                                      // registers use them; RAM writes
-                                      // arrive as merged full words
+    input  logic [1:0]  cpu_bsel,     // byte strobes: mixer registers and
+                                      // VRAM lane writes honour them;
+                                      // palette writes arrive as merged
+                                      // full words (s32_v60bus)
     input  logic [23:1] cpu_addr,     // V60 byte address >> 1
     input  logic [15:0] cpu_wdata,
     output logic [15:0] cpu_rdata,
@@ -275,9 +276,13 @@ module s32_video (
     // variable-indexed read: Quartus 17 then treats vregs as a RAM and
     // crashes on the vreg() calls in port connections.
     logic [15:0] vregs [0:127];
+    // VRAM byte writes arrive as lane writes (cpu_bsel) since 2026-10-31,
+    // so a register written a byte at a time keeps its other byte
     always_ff @(posedge clk)
-        if (q_sel_vram && cpu_we_q && cpu_addr_q[16:8] == 9'h1FF)
-            vregs[cpu_addr_q[7:1]] <= cpu_wdata_q;
+        if (q_sel_vram && cpu_we_q && cpu_addr_q[16:8] == 9'h1FF) begin
+            if (cpu_bsel_q[0]) vregs[cpu_addr_q[7:1]][7:0]  <= cpu_wdata_q[7:0];
+            if (cpu_bsel_q[1]) vregs[cpu_addr_q[7:1]][15:8] <= cpu_wdata_q[15:8];
+        end
 
     function automatic logic [15:0] vreg (input logic [7:0] off);
         vreg = vregs[off[7:1]];

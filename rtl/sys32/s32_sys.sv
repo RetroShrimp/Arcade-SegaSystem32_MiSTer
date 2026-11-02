@@ -199,7 +199,10 @@ module s32_sys (
     // the b60_* wires.
     logic         bcu_busy;
     logic         bcu_run, bcu_tw, bcu_done;   // V60 clock wait-debt (below)
+    logic         bcu_fetch_ok;                // prefetch cycle, not waiting
     logic         bus_wait_emul;
+    logic [1:0]   bus_xslots;                // cycle's slots beyond three (5385)
+    logic         bus_wait_native;           // this cycle costs the ideal machine 1 T3 slot
     logic         bcu_pend;      // bus unit has a strobe queued (FD1149 model)
     logic         b60_re, b60_we;
     logic [31:0]  b60_addr, b60_wdata, b60_rdata;
@@ -290,7 +293,8 @@ module s32_sys (
         .f_re(b60_re), .f_we(b60_we), .f_addr(b60_addr),
         .f_wdata(b60_wdata), .f_size(b60_size), .f_fetch(b60_fetch),
         .f_rdata(b60_rdata), .f_hold(bus_hold), .f_pend(bcu_pend),
-        .st_run(bcu_run), .st_tw(bcu_tw), .st_done(bcu_done)
+        .st_run(bcu_run), .st_tw(bcu_tw), .st_done(bcu_done),
+        .st_fetch_ok(bcu_fetch_ok), .x_slots(bus_xslots)
     );
 
     // ------------------------------------------------------ bus fabric
@@ -336,14 +340,26 @@ module s32_sys (
     // answer inside it; the ideal-memory bench (sim/s32_sys) never waits
     // there. Each such TW slot is charged as 4 clk of V60 time owed, and
     // the slot after it in the same bus cycle too (the fabric's tail after
-    // the refill). The debt is repaid while the bus unit is idle by
-    // stepping the counter by 2 (cen16 every 2 clk, the spacing S32.sdc's
-    // V60 setup-2 exception already claims), 1 clk of debt per clk, so the
-    // V60 runs as many cen16 slots per frame as with ideal memories, never
-    // more, at most WDEBT_MAX clk (~16 us) behind real time. Bus cycles
-    // themselves always run at the nominal rate, so every fabric latency
-    // the ideal bench has is kept. With no emulated wait the debt stays 0
-    // and the clock is the plain clk/4 divider.
+    // the refill), but only in slots that actually hold the core (bcu
+    // busy or the queue unable to feed the decoder). The debt is repaid
+    // while the bus unit is idle, or while it is running a PREFETCH cycle
+    // that is not waiting in T3, by one double step per slot (a 3-clk slot
+    // instead of 4; S32.sdc's V60 setup-2 exception covers that spacing),
+    // 1 clk of debt per slot, so the V60 runs about as many cen16 slots
+    // per frame as with ideal memories and never more than its stalls
+    // cost it (per bus cycle by construction, measured whole on
+    // tools/pcbtests/pt_lz.py: Q56), at most WDEBT_MAX clk (~16 us)
+    // behind real time. Data
+    // cycles run at the nominal 4-clk slot pacing, so every fabric
+    // latency the ideal bench has on an operand access is kept; a
+    // compressed prefetch cycle that misses the ROM line cache waits in T3
+    // as before and is charged there if the core is held. (Until 2026-10-31 repayment needed an idle bus unit; with
+    // prefetch cycles back to back the bus is busy 99% of the time on
+    // fetch-bound code, the debt sat at WDEBT_MAX and every further wait
+    // went unpaid: sim/s32_board +BUSWAIT on tools/pcbtests/pt_lz.py showed
+    // 48,656 unpaid slots per list against 11,489 boot-only before.) With
+    // no emulated wait the debt stays 0 and the clock is the plain clk/4
+    // divider.
     //
     // All registered: the bus unit's run changes only on a cen16 edge, so
     // a clk with no cen16 tells the next clk's run, and cen16 itself is
@@ -353,24 +369,71 @@ module s32_sys (
     logic       cen16;
     logic       wd_rec;                  // this clk steps the divider by 2
     logic [9:0] wdebt;                   // clk of V60 time owed
-    logic       wd_cyc;                  // this bus cycle has been charged
-    wire        wd_charge = bcu_tw && (bus_wait_emul || wd_cyc)
+    logic       cyc_emul;                // this bus cycle saw an emulated hold
+    logic [1:0] cyc_tw;                  // its T3 wait slots sampled so far
+    // Charge a wait slot only while the core is actually held by it
+    // (bcu_busy: waiting on a data cycle; fetch_hold: the queue cannot
+    // feed the decoder). A prefetch that waits while the core goes on
+    // executing costs the core nothing, and repaying it would run the
+    // board AHEAD of the ideal machine (2026-10-31 review: with every
+    // prefetch wait charged the board finished tools/pcbtests/pt_lz.py's
+    // list before sim/pt_rom did; the stall gate took back about 2.3k
+    // clk of that).
+    //
+    // Which T3 slots of a bus cycle are the board's own: the cycle keeps a
+    // sticky flag, cyc_emul (an emulated hold was seen at any clk of it),
+    // and a count of its T3 wait slots so far, cyc_tw. A T3 slot is
+    // charged when the cycle has seen an emulated hold and the slots
+    // already counted cover the one the ideal machine pays itself
+    // (bus_wait_native: a two-pass serialized access, e.g. a palette byte
+    // write read first, lands one clk past the T3 sample with zero-wait
+    // memories). This catches the two cases a sample-time test misses
+    // (2026-10-31): a short hold that ends before the sample but pushes
+    // completion one slot late (a VRAM write-through of 3-7 clk: no
+    // emulated wait visible at the sample, one slot lost; with the
+    // read-first pass gone that is every VRAM byte write, 27k slots per
+    // pt_lz list), and the native slot of a two-pass access that must not
+    // be charged (it ran the board 4 clk ahead per VRAM byte write while
+    // those were read-first). fetch_hold is the prefetch
+    // window through the length decoder (~20 ns), so it is sampled only
+    // at a step, as the core samples it, into wd_stall_q, which S32.sdc
+    // times at two periods like the core's own inputs; the charge then
+    // uses the previous step's sample (a hold that began in this very
+    // slot is charged from the next one — the conservative side). Fed
+    // straight in, the path ran into the cen16 register at -7 ns.
+    logic       wd_stall_q;
+    wire        wd_owed   = (cyc_emul || bus_wait_emul)
+                            && (cyc_tw >= {1'b0, bus_wait_native});
+    wire        wd_charge = bcu_tw && wd_owed && wd_stall_q
                             && (wdebt <= WDEBT_MAX - 10'd4);
     wire [2:0]  c16_sum   = {1'b0, c16cnt} + (wd_rec ? 3'd2 : 3'd1);
     wire [9:0]  wdebt_n   = wd_charge ? wdebt + 10'd4
                           : wd_rec    ? wdebt - 10'd1 : wdebt;
-    wire        wd_rec_n  = (wdebt_n != 10'd0) && !bcu_run && !cen16;
+    // Repay with ONE double step per slot, as its last step (counter 2 ->
+    // 4), so a slot is never shorter than 3 clk and never leaves a
+    // residue: the core's inputs that settle one clk after a step (the
+    // prefetch queue re-bases then) still get the two periods S32.sdc's
+    // V60 setup-2 exception claims. Two double steps in one slot would
+    // make a 2-clk slot and time those paths at one period (2026-10-31
+    // review: u_pfu|base -> u_v60 paths need ~28 ns).
+    wire        wd_rec_n  = (wdebt_n != 10'd0) && (!bcu_run || bcu_fetch_ok)
+                            && !cen16 && (c16_sum[1:0] == 2'd2);
     always_ff @(posedge clk) begin
         if (rst) begin
             c16cnt <= 2'd0; cen16 <= 1'b0; wd_rec <= 1'b0;
-            wdebt  <= 10'd0; wd_cyc <= 1'b0;
+            wdebt  <= 10'd0; cyc_emul <= 1'b0; cyc_tw <= 2'd0; wd_stall_q <= 1'b0;
         end else begin
+            if (cen16) wd_stall_q <= bcu_busy || fetch_hold;
             c16cnt <= c16_sum[1:0];
             wd_rec <= wd_rec_n;
             cen16  <= ({1'b0, c16_sum[1:0]} + (wd_rec_n ? 3'd2 : 3'd1)) >= 3'd4;
             wdebt  <= wdebt_n;
-            if (bcu_done)       wd_cyc <= 1'b0;
-            else if (wd_charge) wd_cyc <= 1'b1;
+            if (bcu_done) begin               // the cycle is complete
+                cyc_emul <= 1'b0; cyc_tw <= 2'd0;
+            end else begin
+                if (bus_wait_emul) cyc_emul <= 1'b1;
+                if (bcu_tw && cyc_tw != 2'd3) cyc_tw <= cyc_tw + 2'd1;
+            end
         end
     end
 `ifndef SYNTHESIS
@@ -381,7 +444,7 @@ module s32_sys (
     always @(posedge clk) if (!rst) begin
         if (wd_charge) wd_n_charge <= wd_n_charge + 1;
         if (wd_rec)    wd_n_rec    <= wd_n_rec + 1;
-        if (bcu_tw && (bus_wait_emul || wd_cyc) && !wd_charge)
+        if (bcu_tw && wd_owed && !wd_charge)
             wd_n_cap <= wd_n_cap + 1;
         if (wdebt > wd_peak) wd_peak <= wdebt;
     end
@@ -392,7 +455,8 @@ module s32_sys (
         .clk(clk), .rst(rst),
         .mem_re(b60_re), .mem_we(b60_we), .mem_addr(b60_addr),
         .mem_wdata(b60_wdata), .mem_size(b60_size), .mem_fetch(b60_fetch),
-        .mem_rdata(b60_rdata), .bus_hold(bus_hold), .wait_emul(bus_wait_emul),
+        .mem_rdata(b60_rdata), .bus_hold(bus_hold), .wait_emul(bus_wait_emul), .wait_native(bus_wait_native),
+        .bus_xslots(bus_xslots),
         .romd_pc(romd_pc), .romd_bytes(romd_bytes),
         .romd_hold(romd_hold),
         .romf_pc(romf_pc), .romf_bytes(romf_bytes), .romf_hold(romf_hold),

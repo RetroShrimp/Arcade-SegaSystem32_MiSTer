@@ -58,6 +58,13 @@ module s32_v60bus (
     // the EPROMs and VRAM answer inside the bus cycle. s32_sys's V60 clock
     // repays the T3 waits these cause (docs/alien3-bringup.md §6.2).
     output logic        wait_emul,
+    // the bus cycle in flight costs the ideal machine one T3 wait slot of
+    // its own (a two-pass serialized access): the wait-debt clock in
+    // s32_sys charges T3 slots beyond that one (see wait_native below)
+    output logic        wait_native,
+    // cen16 slots the bus cycle at mem_addr adds to the bus unit's three
+    // (the 315-5385 timing table below; v60_bcu inserts them after T2)
+    output logic [1:0]  bus_xslots,
 
     // ---- program ROM data reads: served by a data-side line
     //      adapter (a second s32_v60fetch); the fabric holds until
@@ -210,22 +217,43 @@ module s32_v60bus (
     assign wram_qb = {wram_qb_l[3], wram_qb_l[2],
                       wram_qb_l[1], wram_qb_l[0]};
 
+
     // ------------------------------------------------ sprite list RAM
     // a 16-bit "port" so the serializer treats it like the video and
     // sprite-control ports
     logic        spm_sel, spm_we;
+    logic [1:0]  spm_bsel;
     logic [15:0] spm_addr;
     logic [15:0] spm_wdata, spm_rdata;
-    logic [15:0] sprram [0:65535];
+    // Two 8-bit lane arrays: a CPU byte write touches one lane, as on the
+    // real board, where the 315-5386 takes BUBE and BA0 on its CPU side
+    // and drives two write strobes, RWE0 (BD0-7 pair IC66/IC65) and RWE1
+    // (BD8-15 pair IC64/IC63), to its four 64Kx4 dual-port RAMs
+    // (schematics sheet 3/9; 2026-10-31, docs/OPEN-QUESTIONS.md Q29).
+    // Benches address the lanes as sprram_l / sprram_h.
+    logic [7:0]  sprram_l [0:65535];
+    logic [7:0]  sprram_h [0:65535];
 
-    // Intel true-dual-port template: port A = CPU read/write, port B =
-    // sprite engine read.
-    always_ff @(posedge clk) begin        // port A: fabric
-        if (spm_sel && spm_we) begin
-            sprram[spm_addr] <= spm_wdata;
-            spm_rdata <= spm_wdata;
+    // Intel true-dual-port template per lane: port A = CPU read/write
+    // with new-data write-through, port B = sprite engine read. Each lane
+    // is its own always block in exactly the shape the single 16-bit
+    // array had (write and bypass under one condition, read otherwise):
+    // one block with lane-conditional writes and an unconditional bypass
+    // was NOT inferred as RAM (quartus_map Error 276003, the 64Kx16
+    // array turned into registers; 2026-10-31).
+    always_ff @(posedge clk) begin        // port A, low lane
+        if (spm_sel && spm_we && spm_bsel[0]) begin
+            sprram_l[spm_addr] <= spm_wdata[7:0];
+            spm_rdata[7:0] <= spm_wdata[7:0];
         end else
-            spm_rdata <= sprram[spm_addr];
+            spm_rdata[7:0] <= sprram_l[spm_addr];
+    end
+    always_ff @(posedge clk) begin        // port A, high lane
+        if (spm_sel && spm_we && spm_bsel[1]) begin
+            sprram_h[spm_addr] <= spm_wdata[15:8];
+            spm_rdata[15:8] <= spm_wdata[15:8];
+        end else
+            spm_rdata[15:8] <= sprram_h[spm_addr];
     end
     logic [15:0] sr_addr_used;
     logic        sr_re_used;
@@ -240,7 +268,7 @@ module s32_v60bus (
         // edge; the held address is then re-read cleanly before the
         // engine consumes sr_rdata.
         if (sr_re_used && !spr_rdw_collision)
-            sr_rdata <= sprram[sr_addr_used];
+            sr_rdata <= {sprram_h[sr_addr_used], sprram_l[sr_addr_used]};
     end
 
     // ------------------------------------------------- region decode
@@ -286,9 +314,28 @@ module s32_v60bus (
     // ---------------------------------------- 315-5385 timing registers
     // Sixteen 2-bit access-delay fields ($E00000-0F), one per address
     // megabyte a[23:20]. Games write a default table at boot (s32tech
-    // "Memory timing": 0 = moderate, 1 = short, 2 = moderate, 3 = long wait).
-    // How many clocks each setting means is not documented, so the values
-    // are stored and read back but add no wait states (as in MAME).
+    // "Memory timing": 0 = moderate, 1 = short, 2 = moderate, 3 = long;
+    // "the length of the wait state portion of a V60 bus access cycle").
+    // ga2 and spidman write 00 00 03 02 02 00 00 02 0x 00 00 00 03 02 00 00
+    // (latest MAME master, write tap at $E00000, 2026-11-01): no region is
+    // ever short. MAME stores the table and ignores it.
+    //
+    // Bus cycle length (2026-11-01, Q56). The full uPD70616 data sheet
+    // (1986-09, "Bus cycle" and the timing diagrams) defines a standard
+    // cycle of four clocks, T1-T2-T3-T4, with READY sampled at the falling
+    // edge of T3 and wait states TW between T3 and T4, and a short cycle of
+    // three clocks, T1-T2-T4, selected by BMODE low at T2, which takes no
+    // waits. The 315-5385 drives the V60's BMODE and its wait input from
+    // this table; the mapping below is this model's reading of it:
+    //   1 (short)            -> short cycle, 3 clocks
+    //   0 / 2 (moderate)     -> standard cycle, 4 clocks
+    //   3 (long)             -> standard + ETMG_LONG_W waits
+    // The ordering is s32tech's; the clock counts are not documented
+    // anywhere. Two real ga2 boards on footage run the attract's load
+    // segments at 1.7-2.4x MAME's flat 8 clk/instruction, the core with
+    // every cycle 3 clocks at 1.25x (docs/OPEN-QUESTIONS.md Q39); with
+    // ETMG_LONG_W = 1 the bus-bound LZ decompressor (tools/pcbtests/pt_lz)
+    // predicts 2.0x.
     (* ramstyle = "logic" *) logic [1:0] etmg [0:15];  // 32 bits: not an M10K (corertlcleanup B1)
     initial begin
         // s32tech default: 00 00 03 02 02 00 00 02 00 00 00 00 03 02 00 00
@@ -297,6 +344,13 @@ module s32_v60bus (
         etmg[8]='d0; etmg[9]='d0; etmg[10]='d0; etmg[11]='d0;
         etmg[12]='d3; etmg[13]='d2; etmg[14]='d0; etmg[15]='d0;
     end
+    localparam logic [1:0] ETMG_LONG_W = 2'd1;
+    // mem_addr is the bus unit's registered f_addr, stable from T1 on
+    function automatic logic [1:0] etmg_xs(input logic [1:0] code);
+        etmg_xs = (code == 2'd1) ? 2'd0
+                : (code == 2'd3) ? 2'd1 + ETMG_LONG_W : 2'd1;
+    endfunction
+    assign bus_xslots = etmg_xs(etmg[mem_addr[23:20]]);
 
     // -------------------------------------------- ROM data window
     // the data-line adapter serves a 14-byte window at romd_pc; the
@@ -466,6 +520,7 @@ module s32_v60bus (
         endcase
     end
 
+
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
     assign word_port = (q_reg == R_VID) || (q_reg == R_SPRCTL) ||
@@ -490,10 +545,58 @@ module s32_v60bus (
     // byte write to a RAM-class 16-bit port = read-modify-write;
     // pass 1 reads the old word (we suppressed), pass 2 writes the
     // merged word. Register-class byte writes skip RMW entirely.
+    // VRAM proper ($300000-$3FFFFF) takes byte writes as single lane
+    // writes, like the real board: the 315-5387 drives two write strobes
+    // to its four 64Kx4 VRAMs, EWR for the DQ0-7 pair and OWR for the
+    // DQ8-15 pair (schematics sheet 2/9, IC68-71 /WE nets), and takes the
+    // V60's byte enable and A0 on its CPU side, so a byte write is one
+    // VRAM cycle with no read. The on-chip VRAM is two 8-bit lane RAMs
+    // and the SDRAM VRAM cache is byte-masked, so both honour vid_bsel.
+    // The SDRAM mask rides A12:A11 (s32_sdram sd_dqm): until 2026-11-01 it
+    // did not, and these lane writes garbled VRAM on silicon.
+    // The palette keeps the read-first merge: sheet 5/9 gives the 315-5388
+    // one write strobe per 8Kx8 SRAM pair and no byte enable on its CPU
+    // side, so a byte write there is not a native lane write (2026-10-31,
+    // docs/OPEN-QUESTIONS.md Q56).
+    logic       vram_lane;
+    assign vram_lane = (q_reg == R_VID) && (q_addr[23:20] == 4'h3);
+    // Sprite RAM byte writes are lane writes too: sheet 3/9 gives the
+    // 315-5386 BUBE and BA0 on its CPU side and two write strobes
+    // (RWE0/RWE1) to its RAM pairs. Alien3 decodes sprite data into it a
+    // byte at a time (0A48D0, `mov.b [R10+],[R11+]`) and Rad Rally inserts
+    // bit fields there (0F88D6, insbfr), so the lane path is exercised.
+    logic       spr_lane;
+    assign spr_lane  = (q_reg == R_SPRRAM);
     logic       rmw_req;
-    assign rmw_req = q_we && byte_lanes && !reg_class;
+    assign rmw_req = q_we && byte_lanes && !reg_class && !vram_lane && !spr_lane;
     logic       rmw_rd;              // in the read pass right now
     assign rmw_rd = rmw_req && !rmw_done;
+
+    // A sub-bus access that needs two A_SUB_P passes runs one clk past the
+    // V60's T3 sample even with zero-wait memories (strobe at accept+2,
+    // five one-clk states per pass, done at accept+8 for one pass and +12
+    // for two, against a T3 sample at +12), so the ideal machine pays ONE
+    // T3 wait slot on it natively (measured 2026-10-31: exactly one per
+    // decompressor VRAM byte write, sim/pt_rom, while VRAM byte writes
+    // were still read-first; they are lane writes now, see vram_lane and
+    // spr_lane). The reachable two-pass cases are a byte write to the
+    // palette (read first) and a 16-bit access to a byte port: the bus
+    // unit never hands the fabric more than
+    // 16 bits, even-aligned, so q_size is 1 or 2 and nothing takes three
+    // passes (if that ever changed, the per-cycle bound in s32_sys's
+    // wait-debt clock would loosen by the extra passes). The board's
+    // wait-debt clock must not charge that native slot: it charges the T3
+    // slots of a cycle beyond wait_native, and only in cycles that saw an
+    // emulated hold. Only serialized (sub-bus) targets can take two passes;
+    // ROM, work RAM and the open/RNG/ETMG paths never wait natively.
+    wire sub_tgt   = !(q_reg == R_ROM || q_reg == R_WRAM || q_reg == R_OPEN
+                       || q_reg == R_RNG || q_reg == R_ETMG);
+    wire sub_multi = rmw_req
+                   || ((word_port && !byte_lanes) ? (q_size > 3'd2) : (q_size > 3'd1));
+    // (A standard cycle's fourth clock covers the second pass: only a
+    // short-cycle region, which none of the games uses, waits natively.)
+    assign wait_native = sub_tgt && sub_multi
+                      && (etmg_xs(etmg[q_addr[23:20]]) == 2'd0);
 
     logic [23:0] sub_a;
     assign sub_a = q_addr + {21'd0, lane};
@@ -508,7 +611,7 @@ module s32_v60bus (
     logic [15:0] wr_word;
     always_comb begin
         if (byte_lanes)
-            wr_word = reg_class ? {2{wr_byte}}
+            wr_word = (reg_class || vram_lane || spr_lane) ? {2{wr_byte}}
                     : sub_a[0] ? {wr_byte, rmw_word[7:0]}
                                : {rmw_word[15:8], wr_byte};
         else
@@ -525,7 +628,7 @@ module s32_v60bus (
     logic [23:0] o_addr;
     logic [15:0] o_wword;
     logic [7:0]  o_wbyte;
-    logic [1:0]  o_bsel;    // byte strobes to reg-class word ports
+    logic [1:0]  o_bsel;    // byte strobes: reg-class, VRAM and sprite RAM
                             // (2'b11 for word/RMW-merged writes)
     logic        o_we;      // effective we (RMW pass 1 reads: 0)
     logic        o_stb;     // 1 exactly during A_SUB
@@ -584,6 +687,7 @@ module s32_v60bus (
         // values equal the o_* copies, so the behaviour is the same.
         spm_sel = 1'b0; spm_we = 1'b0;
         spm_addr = sub_a[16:1]; spm_wdata = wr_word;
+        spm_bsel = (byte_lanes && spr_lane) ? (sub_a[0] ? 2'b10 : 2'b01) : 2'b11;
 
         if (o_stb) begin
             unique case (q_reg)
@@ -821,9 +925,10 @@ module s32_v60bus (
                     o_addr  <= sub_a;
                     o_wbyte <= wr_byte;
                     o_wword <= wr_word;
-                    // byte strobes only for register-class byte
-                    // lanes; merged RAM writes are full words
-                    o_bsel  <= (byte_lanes && reg_class)
+                    // byte strobes for register-class, VRAM and sprite
+                    // RAM byte lanes; palette RMW-merged writes are full
+                    // words (the 315-5388 has no byte enable, sheet 5/9)
+                    o_bsel  <= (byte_lanes && (reg_class || vram_lane || spr_lane))
                                ? (sub_a[0] ? 2'b10 : 2'b01)
                                : 2'b11;
                     o_we    <= q_we && !rmw_rd;
@@ -878,5 +983,6 @@ module s32_v60bus (
             endcase
         end
     end
+
 
 endmodule

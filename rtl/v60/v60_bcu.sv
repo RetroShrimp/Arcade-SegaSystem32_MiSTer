@@ -5,22 +5,33 @@
 // /DS; /READY extends cycles; A0 and /UBE steer bytes) and the NEC uPD71613
 // bus controller datasheet (bus states from CLK rise to CLK rise; Table 1,
 // the ST2-ST0 cycle types, with separate instruction-prefetch and demand-
-// fetch cycles). A bus cycle is three clocks, T1-T2-T3; where exactly
-// /READY is sampled is not documented, so waits extend T3 here.
+// fetch cycles). The full uPD70616 data sheet (1986-09) gives the cycle:
+// standard = four clocks, T1-T2-T3-T4, /READY sampled at the falling edge
+// of T3, waits TW between T3 and T4; short = three clocks, T1-T2-T4, BMODE
+// low at T2, no waits. Here a cycle is T1-T2-T3 (T3 = the data clock, the
+// sheet's T4) plus x_slots TX clocks between T2 and T3: 0 for a short
+// cycle, 1 for a standard one, more for 315-5385 wait states (the
+// fabric's per-megabyte table, s32_v60bus). A fabric that takes longer
+// still extends T3, like /READY.
 //
 // The unit sits between the core's transaction port ({addr, size 1/2/4
 // bytes, any alignment}) and the s32_v60bus fabric. It splits every
 // transaction into the real 16-bit bus cycles (size <= 2, aligned, low or
-// high byte lane) and spaces them at least three cen16 ticks apart (T1, T2,
-// T3 at 16.10795 MHz). A fabric that takes longer extends T3, like /READY.
+// high byte lane), each 3 + x_slots cen16 ticks at 16.10795 MHz and
+// back to back. A fabric that takes longer extends T3, like /READY.
+// (Until 2026-11-01 every cycle was three clocks, the short cycle, which
+// ran the core faster than two real boards on footage: Q39, Q56.)
 //
 // Two clients share the bus: the core's DATA transactions
 // (c_*) and the PFU's instruction FETCH (pf_*, aligned 16-bit reads).
 // Data always wins: a fetch is accepted only when the core has no data
-// request and the unit is idle (the prefetch queue fills "during idle bus
-// periods", per the V60 documentation). A fetch overlaps execution (busy
-// stays low unless the core wants data); data takes the next bus cycle,
-// never interrupting one. Split (little-endian, low byte first; the real
+// request, in an idle slot or in the slot a cycle finishes (the prefetch
+// queue fills "during idle bus periods", V60 Programmer's Reference
+// p.1-18). A fetch overlaps execution (busy stays low unless the core
+// wants data); data takes the next bus cycle, never interrupting one.
+// Whether the real part also starts prefetch cycles back to back, and
+// how its queue arbitrates against a data request that is about to be
+// issued, is not documented: docs/OPEN-QUESTIONS.md Q56. Split (little-endian, low byte first; the real
 // order of the halves has not been measured):
 //   size 1          : (A,   1)
 //   size 2, A even  : (A,   2)
@@ -34,9 +45,10 @@
 // slot. The unit latches the transaction on the cen16 edge where the core
 // moves to its consume state, then holds the core (busy) until the last
 // cycle's T3 ends; the core steps again on that edge with c_rdata valid.
-// One bus cycle therefore costs the issue slot plus 3 cen16 ticks (the
+// One data access therefore costs the issue slot plus 3 + x_slots cen16
+// ticks (the
 // real CPU overlaps the issue slot with its pipeline, so this is slightly
-// slower). A strobe from a consume-and-issue state is latched on the
+// slower; on fetch-saturated code the slot is bus time anyway, pt_lz). A strobe from a consume-and-issue state is latched on the
 // finishing edge, with the previous read's c_rdata kept through its
 // consume slot.
 //
@@ -85,10 +97,18 @@ module v60_bcu (
 
     // ---- status for the clock's wait-debt recovery (s32_sys): a
     //      transaction is in flight; this cen16 slot is a T3 wait (TW);
-    //      the current bus cycle's fabric service is complete
+    //      the current bus cycle's fabric service is complete; the cycle
+    //      is a prefetch that is not waiting
     output logic        st_run,
     output logic        st_tw,
-    output logic        st_done
+    output logic        st_done,
+    // the cycle in flight is a prefetch and is not waiting in T3: a slot
+    // the wait-debt clock may compress (2026-10-31; see s32_sys.sv)
+    output logic        st_fetch_ok,
+
+    // ---- cycle length: cen16 slots this bus cycle (at f_addr) adds
+    //      between T2 and T3 (s32_v60bus bus_xslots, from f_addr)
+    input  logic [1:0]  x_slots
 );
 
     // ----------------------------------------------------- client select
@@ -114,9 +134,10 @@ module v60_bcu (
     wire [31:0] pl2_a  = s_addr + 32'd3;    // size4-odd only: (A+3,1,3)
 
     // ------------------------------------------------------------ state
-    localparam [1:0] T1 = 2'd0, T2 = 2'd1, T3 = 2'd2;
+    localparam [1:0] T1 = 2'd0, T2 = 2'd1, T3 = 2'd2, TX = 2'd3;
     logic        run;                        // a transaction is in flight
     logic [1:0]  tst;
+    logic [1:0]  xc;                         // TX slots left after this one
     logic [1:0]  n_cyc, ci;
     logic [31:0] q1_a, q2_a;
     logic [1:0]  q1_sz, q1_of;
@@ -163,14 +184,19 @@ module v60_bcu (
     // Accept DATA at a cen16 step edge while idle — OR at the finishing
     // edge itself: a consume-and-issue state's strobe is visible during
     // the release cycle and must be latched then (the core's data path,
-    // unchanged from the single-client BCU). Accept FETCH only when
-    // FULLY idle (!run, never at the finishing edge): the PFU clears its
-    // `inflight` one edge after pf_done, so granting a new fetch at the
-    // finishing edge would desync the BCU (thinks it started one) from
-    // the PFU (didn't grant). One idle cen16 between fetch words is
-    // correct — the PFU re-arbitrates, and data can seize the slot.
+    // unchanged from the single-client BCU). Accept FETCH the same way
+    // (2026-10-31, Q39): the PFU requests the next word in the slot its
+    // current word retires (pf_done), so prefetch cycles run back to back,
+    // and a fetch follows a data cycle without an idle slot. Data still
+    // wins: a core request in the finishing slot takes the bus first.
+    // (Until 2026-10-31 a fetch was accepted only when fully idle, which
+    // put one dead slot between fetch words and after every data cycle —
+    // a 4-clock prefetch word on a 3-clock bus; tools/pcbtests/pt_lz.py
+    // measured it. The uPD71613 datasheet defines bus states edge to edge
+    // and draws a single cycle; it says nothing about the spacing of
+    // consecutive cycles, so back to back is this model's hypothesis — Q56.)
     wire accept_data  = d_req && cen16 && (!run || finishing);
-    wire accept_fetch = !d_req && pf_req && cen16 && !run;
+    wire accept_fetch = !d_req && pf_req && cen16 && (!run || finishing);
     wire accept       = accept_data || accept_fetch;
 
     // Core freeze. The core issues mem_re/we as a one-cycle pulse and
@@ -197,6 +223,7 @@ module v60_bcu (
     assign st_run  = run;
     assign st_tw   = run && cen16 && (tst == T3) && !done_q;
     assign st_done = done_q;
+    assign st_fetch_ok = run && serving_fetch && !((tst == T3) && !done_q);
     assign f_re = f_stb && !t_we;
     assign f_we = f_stb && t_we;
     assign f_fetch = serving_fetch;   // valid while run (the fabric samples
@@ -219,7 +246,7 @@ module v60_bcu (
         if (rst) begin
             run <= 1'b0; pend_stb <= 1'b0;
             issued <= 1'b0; seen_hold <= 1'b0;
-            tst <= T1; ci <= 2'd0; n_cyc <= 2'd0;
+            tst <= T1; ci <= 2'd0; n_cyc <= 2'd0; xc <= 2'd0;
             t_we <= 1'b0; fill_pend <= 1'b0;
             done_q <= 1'b0; serving_fetch <= 1'b0;
         end else begin
@@ -287,7 +314,12 @@ module v60_bcu (
             end else if (run && cen16) begin
                 case (tst)
                     T1: tst <= T2;
-                    T2: tst <= T3;
+                    T2: if (x_slots != 2'd0) begin
+                            tst <= TX; xc <= x_slots - 2'd1;
+                        end else
+                            tst <= T3;
+                    TX: if (xc == 2'd0) tst <= T3;
+                        else            xc  <= xc - 2'd1;
                     default:                           // T3
                         if (done_q) begin
                             if (ci == n_cyc)

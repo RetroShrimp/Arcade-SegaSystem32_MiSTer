@@ -1,11 +1,14 @@
 // v60_pfu.sv — V60 prefetch unit (instruction queue).
 //
-// References: the NEC V60 information sheet (the prefetch unit is a 16-byte
-// queue that fills "during idle bus periods"; fetch latency is "reduced to
-// zero if the instruction is found in the pre-fetch queue"), the uPD71613
-// bus controller datasheet (Table 1: instruction prefetch is its own bus
-// cycle type) and the V60 programmer's reference (p27: data cycles take
-// priority over queue fills).
+// References: the V60 Programmer's Reference p.1-18 (PDF p28; the PFU
+// loads "the 16 byte instruction queue from external memory during idle
+// bus periods", fetch latency "reduced to zero if the instruction is found
+// in the pre-fetch queue"), the NEC V60 information sheet (block diagram:
+// prefetch queue feeding the decoder) and the uPD71613 bus controller
+// datasheet (Table 1: instruction prefetch is its own bus cycle type).
+// That data cycles take priority over queue fills is this model's policy
+// (the only reading of "idle bus periods" that keeps operands flowing),
+// not a documented statement: docs/OPEN-QUESTIONS.md Q56.
 //
 // The queue follows the core's pc (drain on sequential advance, flush on a
 // jump), tracks how many bytes are valid, and fills through 16-bit fetch
@@ -155,10 +158,30 @@ module v60_pfu (
     wire [23:0] fill_a   = base + {19'd0, count};   // next byte to fetch
     wire        fill_odd = fill_a[0];
     wire [23:0] fill_wa  = {fill_a[23:1], 1'b0};     // aligned word address
-    wire        want_fill = ((count <= 5'd14) || (long_q && count <= 5'd22))
-                            && !inflight;
+    // Back-to-back fills (2026-10-31, Q39). While the current fetch word
+    // retires (pf_done, the BCU's finishing slot) the NEXT word is already
+    // requested in that slot, so consecutive prefetch cycles run
+    // T1-T2-T3-T1... with no idle slot between them. Rationale and its
+    // limits: the uPD71613 datasheet defines bus states from CLK rise to
+    // CLK rise and draws one cycle at a time; the Programmer's Reference
+    // (p.1-18) has the queue fill "during idle bus periods". Neither says
+    // how the CPU spaces consecutive prefetch cycles, so back-to-back is
+    // the model's assumption, recorded in docs/OPEN-QUESTIONS.md Q56.
+    // Before this the unit re-requested one slot after retiring, so every
+    // prefetch word cost 4 clocks instead of 3, and the decompressor in
+    // ga2's scene loads (tools/pcbtests/pt_lz.py) ran fetch-bound at 1.66x
+    // MAME's time. The retiring word's bytes are not in `count` yet, so
+    // the fill test and the next address look past them; a word that is
+    // being dropped (flushed) is fetched again at the same address. No
+    // request in a flush slot: base/count move to the new stream first.
+    wire        retire_c  = inflight && pf_done;
+    wire        append_c  = retire_c && !flushed && !this_flush;
+    wire [4:0]  count_n   = count + (append_c ? (fill_odd ? 5'd1 : 5'd2) : 5'd0);
+    wire [23:0] next_wa   = append_c ? fill_wa + 24'd2 : fill_wa;
+    wire        want_fill = ((count_n <= 5'd14) || (long_q && count_n <= 5'd22))
+                            && (!inflight || retire_c) && !this_flush;
     assign pf_req  = want_fill;
-    assign pf_addr = fill_wa;
+    assign pf_addr = next_wa;
 
     // ---------------------------------------------- next-state (single)
     // drain/flush and append compose into ONE count/head/base update.
@@ -184,8 +207,8 @@ module v60_pfu (
     // flush). Because a drain preserves base+count, fill_odd/fill_wa are
     // invariant from grant to done absent a flush — so appending by the
     // current fill_odd at the current tail is correct.
-    wire granting  = pf_req && pf_grant && !inflight;
-    wire retire    = inflight && pf_done;
+    wire granting  = pf_req && pf_grant;       // may coincide with retire
+    wire retire    = retire_c;
     wire do_append = retire && !flushed && !this_flush;
     wire [4:0] tail  = (head_pd + count_pd) & 5'h1F;
     wire [4:0] tail1 = (tail + 5'd1) & 5'h1F;
@@ -235,8 +258,9 @@ module v60_pfu (
             // flight, so it can never stick.
             if (this_flush && (inflight || granting))
                 flushed <= 1'b1;
-            else if (retire || (!inflight && !granting))
-                flushed <= 1'b0;
+            else if (granting || retire || !inflight)
+                flushed <= 1'b0;       // a grant outside a flush slot starts
+                                       // a clean word (back-to-back case)
         end
     end
 

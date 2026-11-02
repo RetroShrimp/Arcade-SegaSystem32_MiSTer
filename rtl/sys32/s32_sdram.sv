@@ -70,6 +70,14 @@ module s32_sdram #(
     output logic        sd_we_n,
     output logic [1:0]  sd_ba,
     output logic [12:0] sd_a,
+    // = sd_a[12:11]. On MiSTer SDRAM modules the chip's DQML/DQMH are
+    // shorted to A11/A12 on the PCB (as in the Genesis and Atari System 1
+    // MiSTer cores), so the byte mask travels on the address pins: every
+    // command but a single WRITE carries 00 there in its column/mode form,
+    // and an ACTIVE's row bits only reach DQM when no data is moving. The
+    // FPGA's own DQM pins follow A12:A11, so whichever net they land on
+    // they agree with it (2026-11-01: VRAM byte writes, the first masked
+    // writes, wrote both bytes on silicon while the mask rode these pins).
     output logic [1:0]  sd_dqm,
     inout  wire  [15:0] sd_dq
 );
@@ -85,6 +93,8 @@ module s32_sdram #(
     function automatic logic [9:0] a_col (input logic [24:1] a);
         a_col = {1'b0, a[9:1]};
     endfunction
+
+    assign sd_dqm = sd_a[12:11];   // the chip's DQM (see the port note)
 
     // command encodings {cs,ras,cas,we}
     // (C_BST is used ONLY on non-auto-precharge single writes, where
@@ -209,7 +219,6 @@ module s32_sdram #(
     always_ff @(posedge clk) begin
         cmd    <= C_NOP;
         dq_oe  <= 1'b0;
-        sd_dqm <= 2'b00;
         wdone  <= 1'b0;
         wbdone <= 1'b0;
         for (i = 0; i < 6; i = i + 1) begin
@@ -347,18 +356,19 @@ module s32_sdram #(
                     sd_a  <= {2'b00, 1'b1, a_col(g_addr)}; // a[10]=1 AP
                     if (grant == 3'd6) begin
                         // single write without auto-precharge. Ending
-                        // the burst with DQM-masked beats does not work
-                        // on this board: DQM settles one cycle too late
-                        // for the chip's sampling edge, so every write
-                        // also landed in word+1 (measured). The command
-                        // pins do make that edge, so the burst is ended
-                        // with BURST TERMINATE (legal on a non-AP write)
-                        // plus an explicit PRECHARGE.
+                        // the burst with DQM-masked beats did not work
+                        // on this board (every write also landed in
+                        // word+1, measured): the mask was driven on the
+                        // FPGA's DQM pins while the chip's DQM is
+                        // A12:A11 (sd_dqm above). The burst is ended with
+                        // BURST TERMINATE (legal on a non-AP write) plus
+                        // an explicit PRECHARGE, which needs no mask.
+                        // The write's own byte mask rides A12:A11 of the
+                        // WRITE command (column bits there are unused).
                         cmd <= C_WR;
-                        sd_a <= {2'b00, 1'b0, a_col(g_addr)}; // no AP
+                        sd_a <= {g_wdqm, 1'b0, a_col(g_addr)}; // no AP
                         dq_oe <= 1'b1;
                         dq_out <= g_wdata;
-                        sd_dqm <= g_wdqm;
                         st <= S_WR_BST;
                     end else if (grant == 3'd7) begin
                         cmd <= C_WR;

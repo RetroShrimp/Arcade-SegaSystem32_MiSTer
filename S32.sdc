@@ -34,18 +34,41 @@ set_multicycle_path -hold 1 \
 
 # ---- V60 CPU: 2 clk_sys periods --------------------------------------------
 # The V60 core steps on cen16 (clk_sys / 4 = the real 16.108 MHz CPU clock)
-# and is frozen between steps, so every v60:u_v60 register holds for at
-# least 4 clk_sys. The bus unit (v60_bcu) registers everything the rest of
-# the machine sees.
+# and is frozen between steps. A slot is 4 clk_sys, or 3 clk_sys while the
+# board build repays SDRAM wait debt (s32_sys.sv wd_rec: one double step
+# per slot, as its last step, since 2026-10-31); the clock never makes a
+# 2-clk slot. The bus unit (v60_bcu) registers everything the rest of the
+# machine sees.
 #
-# Setup 2 under-claims the real 4-clock spacing, which is the safe
-# direction. Do not relax it further: the prefetch unit's paths are bounded
-# by the cen16 spacing at which its state is consumed, not by the full
-# 4-clock freeze, and a looser claim lets unsettled fetch data be latched.
+# Setup 2 claims two periods, which a 3-clk slot still gives to an input
+# that settles one clk after a step (the prefetch queue re-bases then, so
+# its window/count -> u_v60 paths, ~28 ns in the seed-11 build, have
+# exactly the two periods claimed). Do not relax it further, and do not let
+# the slot shrink below 3 clk: the prefetch unit's paths are bounded by the
+# cen16 spacing at which its state is consumed, not by the nominal freeze,
+# and a looser claim lets unsettled fetch data be latched.
 set_multicycle_path -setup 2 -from [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -hold 1 -from [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -setup 2 -to [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -hold 1 -to [get_registers {*|v60:u_v60|*}]
+
+# ---- V60 wait-debt stall sample: 2 periods ----------------------------------
+# s32_sys wd_stall_q samples `bcu_busy || fetch_hold` only on cen16, exactly
+# as the core samples the same signals (fetch_hold is the prefetch window
+# through the length decoder, ~20 ns). Same spacing argument as the u_v60
+# block above: the source settles one clk after a step and the next step is
+# three clk or more later. Scoped to the prefetch unit's registers: the
+# window/count path is the two-period one; the other startpoint in that cone
+# is the core's pc (the length decoder itself is combinational), covered by
+# the -from u_v60 rule above; the cen16 and bus-unit terms into wd_stall_q
+# are genuinely single-cycle (~9-10 ns) and stay checked at one period
+# (seed-11 release netlist core0p143: pfu 24.76 ns at two periods, slack
+# +5.54; cen16 8.03 ns and bcu 6.24 ns at one, +7.19 / +8.98). (Added
+# 2026-10-31: fed in without this register the
+# path ended at the cen16 register at -7 ns; first written -to-only,
+# scoped the same day.)
+set_multicycle_path -setup 2 -from [get_registers {*|v60_pfu:u_pfu|*}] -to [get_registers {*|s32_sys:u_sys|wd_stall_q}]
+set_multicycle_path -hold 1 -from [get_registers {*|v60_pfu:u_pfu|*}] -to [get_registers {*|s32_sys:u_sys|wd_stall_q}]
 
 # ---- V60 prefetch long-instruction hint: 2 periods ------------------------
 # v60_pfu decodes its "instruction longer than 16 bytes" hint (long_q) from a
