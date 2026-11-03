@@ -34,7 +34,8 @@ scans. *Golden Axe*, *Holosseum*, *Super Visual Football*, *Super Visual
 Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*,
 *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and
 *System 32* are trademarks of
-SEGA; *F1* is a trademark of Formula One Licensing B.V.;
+SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z*
+is a trademark of Bird Studio/Shueisha and Toei Animation;
 *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of
 Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled

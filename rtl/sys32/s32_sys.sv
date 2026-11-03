@@ -98,6 +98,9 @@ module s32_sys (
     // ---- F1 Super Lap's FD1149 protection model (board descriptor byte 2
     // bit 4). See s32_v60bus's "FD1149 vblank writes (f1lap)".
     input  logic        prot_f1lap,
+    // ---- Dragon Ball Z: V.R. V.S.'s FD1149 protection model (board
+    // descriptor byte 2 bit 6). See s32_v60bus's "FD1149 state copy".
+    input  logic        prot_dbz,
     // ---- Rad Mobile's 837-7536 A/D board (board descriptor byte 2 bit 0):
     // one MSM6253 at $C00050 (s32_msm6253). adc_ain[8n +: 8] is channel n's
     // conversion result (unsigned).
@@ -486,7 +489,8 @@ module s32_sys (
         .trk_offset(trk_offset), .trk_rdata(trk_rdata),
         .adc_board(adc_board), .adc_sel(adc_sel), .adc_we(adc_we),
         .adc_offset(adc_offset), .adc_rdata(adc_rdata),
-        .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap)
+        .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
+        .prot_dbz(prot_dbz)
         , .vid_hold(vram_cpu_hold)
     );
 

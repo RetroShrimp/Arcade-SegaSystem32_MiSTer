@@ -6,13 +6,14 @@ around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
 Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream**, **Alien3: The
-Gun**, **Rad Rally** and **F1 Super Lap**, which use the same board.
+Gun**, **Rad Rally**, **F1 Super Lap** and **Dragon Ball Z: V.R. V.S.**,
+which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
 system and the protection module of Golden Axe and Arabian Fight, each running at its original
-clock. (The protection modules of Burning Rival, Dark Edge, SegaSonic and
-F1 Super Lap have never been read out; see Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
+clock. (The protection modules of Burning Rival, Dark Edge, SegaSonic,
+F1 Super Lap and Dragon Ball Z have never been read out; see Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
 it is the first FPGA implementation of that CPU.
 
 ## Supported games
@@ -51,6 +52,7 @@ it is the first FPGA implementation of that CPU.
 | `F1 Super Lap.mra` | `f1lap` | tested on hardware |
 | `F1 Super Lap (Unprotected).mra` | `f1lapt` | runs in simulation; not yet tested on hardware |
 | `F1 Super Lap (Japan).mra` | `f1lapj` | not yet tested on hardware |
+| `Dragon Ball Z - V.R. V.S..mra` | `dbzvrvs` | tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -80,8 +82,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), `radm.zip`
    (plus `radmu.zip`), `slipstrm.zip` (plus `slipstrmh.zip`),
    `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`), `radr.zip`
-   (plus `radru.zip` or `radrj.zip`), and `f1lap.zip` (plus `f1lapt.zip`
-   or `f1lapj.zip`).
+   (plus `radru.zip` or `radrj.zip`), `f1lap.zip` (plus `f1lapt.zip`
+   or `f1lapj.zip`), and `dbzvrvs.zip`.
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -173,6 +175,12 @@ Gear Down (L) and Overtake (X); Start is Start and Coin is Select, and
 Service and Test have no default. One credit starts a race. Like Rad
 Rally, it was built to link cabinets; the core has no link board, and the
 game runs as a single cabinet.
+
+**Dragon Ball Z: V.R. V.S.** is a two-player fighting game on an 8-way
+stick and three buttons, Punch L (A), Punch R (B) and Jump (X); Start is
+Start and Coin is Select, and Service and Test have no default. Its board
+is Rad Mobile's, with the A/D board fitted; the game reads three of its
+channels every frame and never uses them, so nothing is connected there.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -313,7 +321,14 @@ Things you may notice, or may want to know:
   makes the same writes, as for Dark Edge. The factory-unprotected set
   (`f1lapt`) has no module, but its program is a different build rather
   than a patched copy, so it does not show what the module does.
-- **Sprite group modes 0-3 (F1 Super Lap).** In these mixer modes the top
+- **Dragon Ball Z's protection** is a fifth FD1149 module whose program has
+  never been read out. Once a frame the game writes a command to it and
+  waits for a ready bit; the module then copies the game state the
+  program has asked for into the word the program's main loop runs from,
+  and without that copy the game never leaves its first, empty screen.
+  The core does the copy as MAME does, as part of the command write, and
+  always reads ready; how long the real module takes is not known.
+- **Sprite group modes 0-3 (F1 Super Lap, Dragon Ball Z).** In these mixer modes the top
   bit of a sprite pixel's priority group comes from bit 15 of the sprite's
   colour word. The core follows current MAME (mamedev/mame#16651), which
   changed this on the evidence of game pictures; the hardware notes mark
@@ -396,6 +411,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

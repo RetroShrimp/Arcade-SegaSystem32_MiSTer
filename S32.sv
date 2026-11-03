@@ -421,6 +421,15 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //   byte 1 bit 4  FD1149 protection module 317-0210 (F1 Super Lap, f1lap
 //          and f1lapj; not the unprotected f1lapt): s32_v60bus's vblank
 //          writes (MAME init_f1lap)
+//   byte 1 bit 5  joystick harness (Dragon Ball Z: V.R. V.S.), with bit 0:
+//          two players' 8-way sticks and three buttons (PUNCH-L, PUNCH-R,
+//          JUMP: the game's input test) on P1_A/P2_A in the generic order,
+//          both start buttons; nothing on the A/D channels, which read $FF
+//          (MAME INPUT_PORTS_START(dbzvrvs): IPT_UNKNOWN, default $FF;
+//          docs/dbzvrvs-bringup.md §2)
+//   byte 1 bit 6  FD1149 protection module 317-0215/0217 (Dragon Ball Z):
+//          s32_v60bus's state copy on a write to $A00000 (MAME
+//          init_dbzvrvs)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -481,14 +490,19 @@ wire gun_harness = adc_board & board_cfg2[2];
 // 3) on P1_A bit 0, Gear Down (button 4) on bit 1, Overtake (button 5) on
 // bit 2, all momentary; bits 3-7 unused (MAME INPUT_PORTS_START(f1lap)).
 wire paddle_harness = adc_board & board_cfg2[3];
-wire [7:0] in_p1 = gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
+// Joystick harness (board_cfg2[5], Dragon Ball Z): the generic two-player
+// sticks and buttons, as on a board without the A/D board.
+wire stick_harness = adc_board & board_cfg2[5];
+wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
+                 : gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
                  : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],
                                     joystick_0[6]}
                  : (adc_board & gear_harness) ? ~{7'd0, gear_lever}
                  : adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
                  : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
                              : pad(joystick_0);
-wire [7:0] in_p2 = gun_harness ? ~{6'd0, joystick_1[5], joystick_1[4]}
+wire [7:0] in_p2 = stick_harness ? pad(joystick_1)
+                 : gun_harness ? ~{6'd0, joystick_1[5], joystick_1[4]}
                  : adc_board ? 8'hFF
                  : trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
 // Six-button harness (board_cfg[3], Burning Rival): EXTRA2 carries buttons
@@ -550,7 +564,8 @@ wire [7:0] in_service12 = gun_harness ? ~{
 	: ~{
 	trk_board & joystick_2[7],                    // START3 (trackball board)
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
-	joystick_1[7] & ~adc_board, joystick_0[7],    // START2, START1
+	joystick_1[7] & (~adc_board | stick_harness), // START2
+	joystick_0[7],                                // START1
 	us_cab ? joystick_2[8] : joystick_1[8],       // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
 	test_btn,                                     // TEST
@@ -670,6 +685,7 @@ s32_gun_aim gun_aim
 	.ain(gun_ain)
 );
 wire [31:0] adc_ain = gun_harness ? gun_ain
+                   : stick_harness ? 32'hFFFFFFFF       // nothing connected
                                   : {8'hFF, adc_brake, adc_accel, adc_wheel};
 
 //////////////////////   THE MACHINE   ///////////////////////////
@@ -707,6 +723,7 @@ s32_board board
 	.trk_dy({trk_step[5], trk_step[3], trk_step[1]}),
 	.prot_sonic(board_cfg[7]),
 	.prot_f1lap(board_cfg2[4]),
+	.prot_dbz(board_cfg2[6]),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),
 

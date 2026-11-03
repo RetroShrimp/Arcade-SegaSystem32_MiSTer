@@ -34,7 +34,8 @@
 // "FD1149 flag words" block below. Dark Edge's (prot_darkedge): the
 // "FD1149 vblank writes" block, which F1 Super Lap's (prot_f1lap) shares
 // in its own four states. SegaSonic's (prot_sonic): the "FD1149
-// level load" block. SegaSonic's trackball board (trk_board): uPD4701A
+// level load" block. Dragon Ball Z: V.R. V.S.'s (prot_dbz): the "FD1149
+// state copy" block. SegaSonic's trackball board (trk_board): uPD4701A
 // counters at I/O offsets 40-57 (R_TRK; s32_upd4701). Rad Mobile's A/D
 // board (adc_board): an MSM6253 at I/O offsets 50-57 (R_ADC; s32_msm6253).
 
@@ -184,7 +185,12 @@ module s32_v60bus (
     // ---- F1 Super Lap's FD1149 protection module (descriptor byte 1
     //      bit 4): at each vblank-in it writes work RAM, as Dark Edge's
     //      does (fd_vbl, bcu_pend; see "FD1149 vblank writes (f1lap)")
-    input  logic        prot_f1lap
+    input  logic        prot_f1lap,
+
+    // ---- Dragon Ball Z: V.R. V.S.'s FD1149 protection module (descriptor
+    //      byte 1 bit 6): the $A00000 window reads $FFFF, and a V60 write
+    //      there copies a work RAM word (see "FD1149 state copy (dbzvrvs)")
+    input  logic        prot_dbz
 );
 
     // ------------------------------------------------------ work RAM
@@ -282,7 +288,8 @@ module s32_v60bus (
 
     typedef enum logic [3:0] {
         R_ROM, R_WRAM, R_VID, R_SPRRAM, R_SPRCTL, R_SHM,
-        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK, R_ADC
+        R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK, R_ADC,
+        R_DZ
     } region_e;
 
     // mirrors (s32tech "Memory map"): the 6xxxxx video pair repeats every
@@ -300,6 +307,8 @@ module s32_v60bus (
         // Dark Edge's FD1149 answers the mailbox window instead: reads
         // $FFFF, writes ignored (MAME darkedge_protection_r/_w)
         else if (a[23:19] == 5'b10100 && prot_darkedge) region_of = R_OPEN;
+        // so does Dragon Ball Z's, whose writes trigger its state copy
+        else if (a[23:19] == 5'b10100 && prot_dbz)   region_of = R_DZ;
         else if (a[23:19] == 5'b10100)               region_of = R_DPRAM;
         else if (a[23:20] == 4'hC && a[6:0] < 7'h20) region_of = R_IO;
         else if (a[23:20] == 4'hC && trk_board && a[6:3] >= 4'h8
@@ -382,7 +391,8 @@ module s32_v60bus (
         // appended so every earlier state keeps its encoding (the benches
         // compare ast with 0, 4 and 7)
         A_SN0, A_SN1, A_SN2, A_SN3, A_SN4, A_SN5, A_SN6,
-        A_FL0, A_FL1, A_FL2, A_FL3
+        A_FL0, A_FL1, A_FL2, A_FL3,
+        A_DZ0, A_DZ1, A_DZ2, A_DZ3
     } astate_e;
     astate_e ast;
 
@@ -491,6 +501,32 @@ module s32_v60bus (
     // here it can fall between the bus cycles of one instruction.
     localparam logic [13:0] FL_WF7C4 = 14'h3DF1;  // $20F7C6 >> 2, lane 2
     localparam logic [13:0] FL_WEE80 = 14'h3BA0;  // $20EE81 >> 2, lane 1
+
+    // ----------------------------------- FD1149 state copy (dbzvrvs)
+    // Dragon Ball Z: V.R. V.S. carries FD1149 317-0215/0217 (MAME's header
+    // above ROM_START(dbzvrvs)), undumped like the others. MAME's handlers
+    // on $A00000-$A7FFFF (segas32_m.cpp dbzvrvs_protection_r/_w): a read
+    // returns $FFFF, and a write, at any address and of any value, copies
+    // the work RAM word at $200044 to $2080C8. What the game does with it
+    // (MAME latest master, tools/mame/dbzvrvs_probe.lua;
+    // docs/dbzvrvs-bringup.md §5): once a frame, in its vblank handler,
+    // it writes $1800 to $A00000 and polls $A00001 until bit 7 reads 1
+    // (0A572C: mov.h #1800, A00000 / test.b A00001 / bp), and the main
+    // loop dispatches on the word at $2080C8 (08060C), which nothing else
+    // writes. $200044 is the state the V60 asks for, so the module is the
+    // latch that makes a requested state current. Without the copy the
+    // game never leaves state 0 (a blank attract screen). The real
+    // module's timing and its reply to the $1800 command are not known
+    // (Q60); here, as in MAME, the copy is part of the trigger write and
+    // the window always reads ready.
+    //   The core runs it as SegaSonic's level load runs: after the V60's
+    // write (which goes nowhere: the window has no RAM) it holds the bus
+    // for four states, so the V60 cannot read $2080C8 before the copy:
+    //   A_DZ0  set up the read of $200044 (lanes 0-1)
+    //   A_DZ1  BRAM read      A_DZ2  OREGA stage
+    //   A_DZ3  $2080C8/C9 = the word; release the bus
+    localparam logic [13:0] DZ_W0044 = 14'h0011;  // $200044 >> 2, lanes 0-1
+    localparam logic [13:0] DZ_W80C8 = 14'h2032;  // $2080C8 >> 2, lanes 0-1
 
     // ---------------------------------------- FD1149 level load (sonic)
     // SegaSonic rev C carries an FD1149, 317-0213 (MAME's comment above
@@ -615,7 +651,7 @@ module s32_v60bus (
     // emulated hold. Only serialized (sub-bus) targets can take two passes;
     // ROM, work RAM and the open/RNG/ETMG paths never wait natively.
     wire sub_tgt   = !(q_reg == R_ROM || q_reg == R_WRAM || q_reg == R_OPEN
-                       || q_reg == R_RNG || q_reg == R_ETMG);
+                       || q_reg == R_RNG || q_reg == R_ETMG || q_reg == R_DZ);
     wire sub_multi = rmw_req
                    || ((word_port && !byte_lanes) ? (q_size > 3'd2) : (q_size > 3'd1));
     // (A standard cycle's fourth clock covers the second pass: only a
@@ -795,6 +831,10 @@ module s32_v60bus (
                             // Both take one cycle (see R_ROM)
                             ast <= A_OPENW;
                         end
+                        R_DZ:
+                            // reads $FFFF (A_OPENW); a write runs the
+                            // FD1149's state copy
+                            ast <= mem_we ? A_DZ0 : A_OPENW;
                         R_RNG: begin
                             // read returns the value in A_OPENW; a
                             // write seeds the generator here
@@ -873,6 +913,22 @@ module s32_v60bus (
                         wram_wen[1]   <= 1'b1;
                         wram_waddr[1] <= FL_WEE80;
                         wram_wd[1]    <= 8'd0;
+                    end
+                    ast <= A_IDLE;
+                end
+
+                // FD1149 state copy (Dragon Ball Z): see the block above
+                A_DZ0: begin                // read $200044
+                    wram_aa <= DZ_W0044;
+                    ast <= A_DZ1;
+                end
+                A_DZ1: ast <= A_DZ2;        // BRAM stage-1 read
+                A_DZ2: ast <= A_DZ3;        // OREGA stage
+                A_DZ3: begin                // $2080C8 = $200044
+                    for (int l = 0; l < 2; l = l + 1) begin
+                        wram_wen[l]   <= 1'b1;
+                        wram_waddr[l] <= DZ_W80C8;
+                        wram_wd[l]    <= wram_qa[8*l +: 8];
                     end
                     ast <= A_IDLE;
                 end
