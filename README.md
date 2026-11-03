@@ -6,8 +6,8 @@ around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
 Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream**, **Alien3: The
-Gun**, **Rad Rally**, **F1 Super Lap** and **Dragon Ball Z: V.R. V.S.**,
-which use the same board.
+Gun**, **Rad Rally**, **F1 Super Lap**, **Dragon Ball Z: V.R. V.S.** and
+**Jurassic Park**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -53,6 +53,10 @@ it is the first FPGA implementation of that CPU.
 | `F1 Super Lap (Unprotected).mra` | `f1lapt` | runs in simulation; not yet tested on hardware |
 | `F1 Super Lap (Japan).mra` | `f1lapj` | not yet tested on hardware |
 | `Dragon Ball Z - V.R. V.S..mra` | `dbzvrvs` | tested on hardware |
+| `Jurassic Park.mra` | `jpark` | runs in simulation; not yet tested on hardware |
+| `Jurassic Park (Japan).mra` | `jparkj` | not yet tested on hardware |
+| `Jurassic Park (Japan, Original).mra` | `jparkja` | not yet tested on hardware |
+| `Jurassic Park (Japan, Conversion).mra` | `jparkjc` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -83,7 +87,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    (plus `radmu.zip`), `slipstrm.zip` (plus `slipstrmh.zip`),
    `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`), `radr.zip`
    (plus `radru.zip` or `radrj.zip`), `f1lap.zip` (plus `f1lapt.zip`
-   or `f1lapj.zip`), and `dbzvrvs.zip`.
+   or `f1lapj.zip`), `dbzvrvs.zip`, and `jpark.zip` (plus `jparkj.zip`,
+   `jparkja.zip` or `jparkjc.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -181,6 +186,15 @@ stick and three buttons, Punch L (A), Punch R (B) and Jump (X); Start is
 Start and Coin is Select, and Service and Test have no default. Its board
 is Rad Mobile's, with the A/D board fitted; the game reads three of its
 channels every frame and never uses them, so nothing is connected there.
+
+**Jurassic Park** is played with two mounted guns, read and aimed exactly
+as Alien3's (left analog stick or a USB lightgun reporting as one; the
+D-pad, and for player 1 a mouse). Fire (the trigger) is A, Start is Start
+and Coin is Select; Service and Test have no default. The cabinet's seat
+moved on a motion drive board, which the core does not move; at every
+power-on the game checks that board ("NET_WORK CHECKING NOW") for about
+five seconds, and the core answers that check as the drive board does, so
+the game then starts as on a real cabinet.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -328,6 +342,15 @@ Things you may notice, or may want to know:
   and without that copy the game never leaves its first, empty screen.
   The core does the copy as MAME does, as part of the command write, and
   always reads ready; how long the real module takes is not known.
+- **Jurassic Park's drive board.** At power-on the game sends eight test
+  patterns to the motion drive board and waits for its answers. The
+  drive board's own program is known, and the core answers each pattern
+  as that program does, within about two milliseconds. How fast the real
+  board answers, and what answered on the conversion cabinet (whose set
+  has no drive board), are not known; the game cannot tell the
+  difference. (MAME instead patches the game's program to skip the check;
+  the core runs the program unchanged.) The seat's motion commands are
+  received and ignored.
 - **Sprite group modes 0-3 (F1 Super Lap, Dragon Ball Z).** In these mixer modes the top
   bit of a sprite pixel's priority group comes from bit 15 of the sprite's
   colour word. The core follows current MAME (mamedev/mame#16651), which
@@ -411,6 +434,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Jurassic Park* is a trademark of Universal City Studios and Amblin Entertainment; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

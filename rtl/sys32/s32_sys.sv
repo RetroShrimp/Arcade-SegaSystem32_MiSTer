@@ -106,6 +106,9 @@ module s32_sys (
     // conversion result (unsigned).
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
+    // ---- Jurassic Park's motion drive board on CNB (board descriptor byte
+    // 2 bit 7): s32_jpdrive answers port G on port C bits 3-0
+    input  logic        jp_drive,
 
     // ---- video out
     output logic        de,
@@ -535,9 +538,13 @@ module s32_sys (
 
     logic [63:0] io_in;
     logic [63:0] io_out;
+    logic [3:0]  jp_reply;            // s32_jpdrive, below
     assign io_in[7:0]   = in_p1;
     assign io_in[15:8]  = in_p2;
-    assign io_in[23:16] = in_portc;
+    // port C: CNB through the CNT0-controlled buffer; with Jurassic Park's
+    // drive board fitted its reply drives bits 3-0 (s32_jpdrive)
+    assign io_in[23:16] = {in_portc[7:4],
+                           in_portc[3:0] & (jp_drive ? jp_reply : 4'hF)};
     assign io_in[31:24] = 8'hFF;
     assign io_in[39:32] = in_service12;
     assign io_in[47:40] = {ee_cs ? ee_do : 1'b1, in_service34,
@@ -545,11 +552,21 @@ module s32_sys (
     assign io_in[63:48] = 16'hFFFF;
 
     logic [7:0] io_cnt;
+    logic [7:0] io_dir;
     s32_io5296 u_io (
         .clk(clk), .rst(rst),
         .sel(io_sel), .we(io_we), .offset(io_offset),
         .wdata(io_wdata), .rdata(io_rdata),
-        .in_ports(io_in), .out_latches(io_out), .dir(), .cnt(io_cnt)
+        .in_ports(io_in), .out_latches(io_out), .dir(io_dir), .cnt(io_cnt)
+    );
+
+    // Jurassic Park's drive board: port G's pins carry the latch while
+    // port G is an output and are released (the board decodes $00) while
+    // it is an input
+    s32_jpdrive u_jpdrive (
+        .clk(clk), .rst(rst),
+        .cnb_g(io_dir[6] ? io_out[55:48] : 8'h00),
+        .reply(jp_reply)
     );
 
     // port D latch drives the EEPROM

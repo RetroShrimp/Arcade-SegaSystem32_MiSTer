@@ -8,9 +8,11 @@
 //     sega_system32_analog: adc.set_input_tag<0..3>("ANALOG1".."ANALOG4").
 //   ROM_START(alien3) comment: "A/D BD NO. 837-7536" (Rad Mobile's board).
 //   docs/alien3-bringup.md §3. Bench: sim/s32_gun_aim.
+//   INPUT_PORTS_START(jpark): the same four ports with no PORT_MINMAX, so
+//     Jurassic Park's Y runs $00-$FF (y_lo = $00; docs/jpark-bringup.md §3).
 //
 // Each gun turns two potentiometers, so the converter reads its position:
-// X left $00 .. right $FF, Y top .. bottom, never $00 in Y. A mounted gun
+// X left $00 .. right $FF, Y top .. bottom, never below y_lo in Y. A mounted gun
 // stays where it is pointed, so each gun has ONE aim, and whichever control
 // moved last sets it:
 //   - the player's left analog stick, or a lightgun reporting its aim as
@@ -39,6 +41,7 @@ module s32_gun_aim #(
     input  logic        clk,
     input  logic        rst,
     input  logic        tick,          // d-pad step strobe
+    input  logic [7:0]  y_lo,          // Y's lowest value (Alien3 $01)
     input  logic [3:0]  dpad1,         // MiSTer order: [0]R [1]L [2]D [3]U
     input  logic [3:0]  dpad2,
     input  logic [15:0] stick1,        // left stick: [7:0] X, [15:8] Y,
@@ -61,11 +64,12 @@ module s32_gun_aim #(
         aim_add = (s > 11'sd255) ? 8'hFF
                 : (s < $signed({3'b000, lo})) ? lo : s[7:0];
     endfunction
-    // the stick as a pointer: {Y, X}, Y kept off $00 as MAME's port is
-    function automatic [15:0] point (input [15:0] stick);
+    // the stick as a pointer: {Y, X}, Y kept at or above y_lo as MAME's
+    // port is
+    function automatic [15:0] point (input [15:0] stick, input [7:0] lo);
         logic [7:0] y;
         y = stick[15:8] ^ 8'h80;
-        point = {(y == 8'h00) ? 8'h01 : y, stick[7:0] ^ 8'h80};
+        point = {(y < lo) ? lo : y, stick[7:0] ^ 8'h80};
     endfunction
     function automatic logic far (input [7:0] a, input [7:0] b);
         far = ((a > b) ? a - b : b - a) > STICK_GRAB;
@@ -83,7 +87,7 @@ module s32_gun_aim #(
             logic [15:0] p, a;
             logic [3:0]  dp;
             logic        dmove, mmove;
-            p  = point(n == 0 ? stick1 : stick2);
+            p  = point(n == 0 ? stick1 : stick2, y_lo);
             dp = (n == 0) ? dpad1 : dpad2;
             dmove = tick & |dp;
             mmove = (n == 0) & mouse_ev & (|mouse_dx | |mouse_dy);
@@ -92,11 +96,11 @@ module s32_gun_aim #(
                 if (own[n]) a = p;           // carry on from the stick's aim
                 if (dmove) begin
                     a[7:0]  = aim_step(a[7:0],  dp[0], dp[1], 8'h00);  // R / L
-                    a[15:8] = aim_step(a[15:8], dp[2], dp[3], 8'h01);  // D / U
+                    a[15:8] = aim_step(a[15:8], dp[2], dp[3], y_lo);  // D / U
                 end
                 if (mmove) begin             // screen Y runs down
                     a[7:0]  = aim_add(a[7:0],  {mouse_dx[8], mouse_dx}, 8'h00);
-                    a[15:8] = aim_add(a[15:8], -{mouse_dy[8], mouse_dy}, 8'h01);
+                    a[15:8] = aim_add(a[15:8], -{mouse_dy[8], mouse_dy}, y_lo);
                 end
                 aim[n] <= a;
                 own[n] <= 1'b0;
@@ -114,7 +118,7 @@ module s32_gun_aim #(
     end
 
     // the stick's aim shows the clock it moves; a held aim from its register
-    assign ain = {own[1] ? point(stick2) : aim[1],
-                  own[0] ? point(stick1) : aim[0]};
+    assign ain = {own[1] ? point(stick2, y_lo) : aim[1],
+                  own[0] ? point(stick1, y_lo) : aim[0]};
 
 endmodule

@@ -430,6 +430,13 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //   byte 1 bit 6  FD1149 protection module 317-0215/0217 (Dragon Ball Z):
 //          s32_v60bus's state copy on a write to $A00000 (MAME
 //          init_dbzvrvs)
+//   byte 1 bit 7  Jurassic Park's cabinet, with bit 0: two positional guns
+//          on the A/D board as Alien3's (P1 X/Y channels 0/1, P2 X/Y 2/3),
+//          but Y over the full $00-$FF; each gun's trigger on its
+//          P1_A/P2_A bit 0, bits 1-7 unused; the generic coins and starts
+//          (MAME INPUT_PORTS_START(jpark)); and the motion drive board on
+//          CNB, answering port G on port C bits 3-0 (s32_jpdrive; MAME
+//          patches the program instead, docs/jpark-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -493,7 +500,12 @@ wire paddle_harness = adc_board & board_cfg2[3];
 // Joystick harness (board_cfg2[5], Dragon Ball Z): the generic two-player
 // sticks and buttons, as on a board without the A/D board.
 wire stick_harness = adc_board & board_cfg2[5];
+// Jurassic Park's cabinet (board_cfg2[7]): a trigger per gun (pad button 1)
+// on bit 0 of its player's port, bits 1-7 unused; the guns' aim is below,
+// the drive board in s32_sys (s32_jpdrive).
+wire jp_cab = adc_board & board_cfg2[7];
 wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
+                 : jp_cab ? ~{7'd0, joystick_0[4]}
                  : gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
                  : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],
                                     joystick_0[6]}
@@ -502,6 +514,7 @@ wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
                  : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
                              : pad(joystick_0);
 wire [7:0] in_p2 = stick_harness ? pad(joystick_1)
+                 : jp_cab ? ~{7'd0, joystick_1[4]}
                  : gun_harness ? ~{6'd0, joystick_1[5], joystick_1[4]}
                  : adc_board ? 8'hFF
                  : trk_board ? ~{7'd0, joystick_1[4]} : pad(joystick_1);
@@ -564,7 +577,7 @@ wire [7:0] in_service12 = gun_harness ? ~{
 	: ~{
 	trk_board & joystick_2[7],                    // START3 (trackball board)
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
-	joystick_1[7] & (~adc_board | stick_harness), // START2
+	joystick_1[7] & (~adc_board | stick_harness | jp_cab), // START2
 	joystick_0[7],                                // START1
 	us_cab ? joystick_2[8] : joystick_1[8],       // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
@@ -670,8 +683,8 @@ wire [8:0] pedal_dn = $signed(pedal_y) > 0 ? {pedal_y, 1'b0} : 9'd0;
 wire [7:0] adc_accel = joystick_0[4] ? 8'hFF : pedal_up[8] ? 8'hFF : pedal_up[7:0];
 wire [7:0] adc_brake = joystick_0[5] ? 8'hFF : pedal_dn[8] ? 8'hFF : pedal_dn[7:0];
 
-// Gun aim (gun_harness, Alien3): the two positional guns' X/Y on the four
-// A/D channels. Each gun has one aim and the control that moved last sets
+// Gun aim (gun_harness, Alien3; jp_cab, Jurassic Park): the two positional
+// guns' X/Y on the four A/D channels. Each gun has one aim and the control that moved last sets
 // it: the player's left stick (or a lightgun reporting as one) points it
 // exactly; the d-pad, and for P1 the mouse, move it and it stays put
 // (s32_gun_aim.sv; docs/alien3-bringup.md §3).
@@ -679,12 +692,13 @@ wire [31:0] gun_ain;
 s32_gun_aim gun_aim
 (
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.y_lo(jp_cab ? 8'h00 : 8'h01),                // Jurassic Park: no MINMAX
 	.dpad1(joystick_0[3:0]), .dpad2(joystick_1[3:0]),
 	.stick1(stick_0), .stick2(stick_1),
 	.mouse_ev(mouse_ev), .mouse_dx(mouse_dx), .mouse_dy(mouse_dy),
 	.ain(gun_ain)
 );
-wire [31:0] adc_ain = gun_harness ? gun_ain
+wire [31:0] adc_ain = (gun_harness | jp_cab) ? gun_ain
                    : stick_harness ? 32'hFFFFFFFF       // nothing connected
                                   : {8'hFF, adc_brake, adc_accel, adc_wheel};
 
@@ -724,6 +738,7 @@ s32_board board
 	.prot_sonic(board_cfg[7]),
 	.prot_f1lap(board_cfg2[4]),
 	.prot_dbz(board_cfg2[6]),
+	.jp_drive(jp_cab),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),
 

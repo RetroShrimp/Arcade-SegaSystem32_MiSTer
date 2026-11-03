@@ -94,6 +94,9 @@ module s32_board (
     // Rad Mobile's A/D board (descriptor byte 2 bit 0): s32_sys / s32_msm6253
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
+    // Jurassic Park's drive board (descriptor byte 2 bit 7): s32_sys /
+    // s32_jpdrive
+    input  logic        jp_drive,
 
     // ---- EEPROM image
     output logic [15:0] ee_dump_data,
@@ -182,7 +185,7 @@ module s32_board (
         .trk_board(trk_board), .trk_stb(trk_stb), .trk_dx(trk_dx),
         .trk_dy(trk_dy), .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
         .prot_dbz(prot_dbz),
-        .adc_board(adc_board), .adc_ain(adc_ain),
+        .adc_board(adc_board), .adc_ain(adc_ain), .jp_drive(jp_drive),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
         .audio_l(audio_l), .audio_r(audio_r),
