@@ -67,7 +67,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
 # is usually in the framework's HDMI scaler (ascal), though the core clock can
 # also miss; if a source change leaves either slightly negative, try another
 # seed.
-set_global_assignment -name SEED 11
+set_global_assignment -name SEED 1
 
 # This tree is the release configuration of the core: the sources carry no
 # configuration switches, so no core VERILOG_MACRO is needed here. The lines

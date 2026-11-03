@@ -437,18 +437,26 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          (MAME INPUT_PORTS_START(jpark)); and the motion drive board on
 //          CNB, answering port G on port C bits 3-0 (s32_jpdrive; MAME
 //          patches the program instead, docs/jpark-bringup.md)
+// A third byte (`<part>00 00 01</part>`) carries the boards after Jurassic
+// Park. A one- or two-byte .mra leaves it 0.
+//   byte 2 bit 0  FD1149 protection module 317-0222 (The J.League 1994):
+//          s32_v60bus's browser hook on writes to $20F700/$20F704 (MAME
+//          init_jleague; docs/jleague-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
 reg [7:0] board_cfg = 8'h00;
 reg [7:0] board_cfg2 = 8'h00;
+reg [7:0] board_cfg3 = 8'h00;
 always @(posedge clk_sys)
 	if (ioctl_wr && ioctl_download && ioctl_index == 1) begin
 		if (ioctl_addr == 0) begin
 			board_cfg  <= ioctl_dout;
 			board_cfg2 <= 8'h00;      // a one-byte descriptor clears byte 1
+			board_cfg3 <= 8'h00;      // and a shorter one clears byte 2
 		end
 		if (ioctl_addr == 1) board_cfg2 <= ioctl_dout;
+		if (ioctl_addr == 2) board_cfg3 <= ioctl_dout;
 	end
 
 //////////////////////   INPUTS   ////////////////////////////////
@@ -738,6 +746,7 @@ s32_board board
 	.prot_sonic(board_cfg[7]),
 	.prot_f1lap(board_cfg2[4]),
 	.prot_dbz(board_cfg2[6]),
+	.prot_jleague(board_cfg3[0]),
 	.jp_drive(jp_cab),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),

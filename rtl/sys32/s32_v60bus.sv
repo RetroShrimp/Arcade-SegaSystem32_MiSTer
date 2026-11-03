@@ -190,7 +190,12 @@ module s32_v60bus (
     // ---- Dragon Ball Z: V.R. V.S.'s FD1149 protection module (descriptor
     //      byte 1 bit 6): the $A00000 window reads $FFFF, and a V60 write
     //      there copies a work RAM word (see "FD1149 state copy (dbzvrvs)")
-    input  logic        prot_dbz
+    input  logic        prot_dbz,
+
+    // ---- The J.League 1994's FD1149 protection module (descriptor byte 2
+    //      bit 0): V60 writes to work RAM $20F700/$20F704 set $20F708 from
+    //      a ROM table and $200016 (see "FD1149 browser hook (jleague)")
+    input  logic        prot_jleague
 );
 
     // ------------------------------------------------------ work RAM
@@ -392,7 +397,8 @@ module s32_v60bus (
         // compare ast with 0, 4 and 7)
         A_SN0, A_SN1, A_SN2, A_SN3, A_SN4, A_SN5, A_SN6,
         A_FL0, A_FL1, A_FL2, A_FL3,
-        A_DZ0, A_DZ1, A_DZ2, A_DZ3
+        A_DZ0, A_DZ1, A_DZ2, A_DZ3,
+        A_JL                         // the 32nd and last 5-bit encoding
     } astate_e;
     astate_e ast;
 
@@ -568,6 +574,53 @@ module s32_v60bus (
     assign sn_trig = prot_sonic && q_addr[23:3] == SN_TRIG[23:3]
                   && (q_addr[2] ? !q_addr[1] : sn_end > 4'd4);
     logic [15:0] sn_level;
+
+    // ------------------------------------- FD1149 browser hook (jleague)
+    // The J.League 1994 (jleague, jleagueo) carries FD1149 317-0222 (MAME's
+    // header above ROM_START(jleague); svs's header names the same part and
+    // MAME gives svs no hook). Undumped like the others. MAME's write
+    // handler on work RAM $20F700-$20F705 (segas32_m.cpp
+    // jleague_protection_w) lets the write land, then, with `data` the
+    // handler's raw 16-bit argument:
+    //   offset 0 ($20F700): byte $20F708 = the low byte of the word at
+    //                       program ROM $7BBC0 + 2*data ("map team browser
+    //                       selection to opponent browser selection")
+    //   offset 2 ($20F704): byte $200016 = data & $FF ("move on to team
+    //                       browser")
+    // The original release (jleagueo) needs it: START at the mode menu
+    // writes 8 to $20F704 (07855C) and the game waits for $200016 to become
+    // 8; picking a team writes its number to $20F700 (078AC2) and the
+    // opponent browser reads $20F708 (07894C). Rev A (jleague) does both in
+    // software (07855F `mov.b #8, 16[R25]`; 078AB6 a byte table at $7BB90),
+    // and that table is exactly MAME's rule on jleagueo's word table at
+    // $7BBC0 for the 12 teams, so the effect is settled the way SegaSonic's
+    // is; how the module sees the write is not (docs/jleague-bringup.md §5,
+    // Q62). Rev A reaches the hook only through its boot RAM clear (0601E6),
+    // whose next writes overwrite both results with 0.
+    //   The bus unit gives the fabric MAME's handler calls one for one: a
+    // byte at any address or an even-aligned word (v60_bcu split table).
+    // A word's `data` is the word; a byte's is the byte in its own lane
+    // (MAME shifts a byte into the lane its address selects), so a byte
+    // at $20F701/$20F705 has data = byte << 8.
+    //   The core runs it as part of the trigger write, as SegaSonic's:
+    //   A_WRAMX  the V60's write lands; offset 2 writes $200016 (lane 2 of
+    //            its word, a lane the trigger write never uses, so the same
+    //            clk); offset 0 points the ROM data adapter at the table
+    //            entry (romd_pc follows q_addr)
+    //   A_JL     wait for the ROM window; $20F708 = its first byte (the
+    //            low byte of the little-endian word); release the bus
+    localparam logic [22:0] JL_T700  = 23'h107B80;  // $20F700 >> 1
+    localparam logic [22:0] JL_T704  = 23'h107B82;  // $20F704 >> 1
+    localparam logic [13:0] JL_W708  = 14'h3DC2;    // $20F708 >> 2, lane 0
+    localparam logic [13:0] JL_W016  = 14'h0005;    // $200016 >> 2, lane 2
+    localparam logic [23:0] JL_TABLE = 24'h07BBC0;
+    logic        jl_t0, jl_t2;
+    logic [15:0] jl_data;
+    assign jl_t0 = prot_jleague && q_addr[23:1] == JL_T700;
+    assign jl_t2 = prot_jleague && q_addr[23:1] == JL_T704;
+    assign jl_data = (q_size != 3'd1) ? q_wdata[15:0]
+                   : q_addr[0]        ? {q_wdata[7:0], 8'h00}
+                                      : {8'h00, q_wdata[7:0]};
 
     // wram unaligned assembly (q_addr-based, captured in A_WRAM2)
     logic [63:0] wram_pair;
@@ -974,6 +1027,15 @@ module s32_v60bus (
                     ast <= A_IDLE;
                 end
 
+                // FD1149 browser hook (J.League): see the block above
+                A_JL:
+                    if (!romd_hold) begin
+                        wram_wen[0]   <= 1'b1;
+                        wram_waddr[0] <= JL_W708;
+                        wram_wd[0]    <= romd_bytes[111:104];
+                        ast <= A_IDLE;
+                    end
+
                 A_ROMW:
                     // a fetch reads the romf window, a data read the
                     // romd window; wait for the selected adapter
@@ -1007,7 +1069,14 @@ module s32_v60bus (
                                     q_wdata[8*i +: 8];
                             end
                         end
-                        ast <= sn_trig ? A_SN0 : A_IDLE;
+                        if (jl_t2) begin    // FD1149 (J.League): $200016
+                            wram_wen[2]   <= 1'b1;
+                            wram_waddr[2] <= JL_W016;
+                            wram_wd[2]    <= jl_data[7:0];
+                        end
+                        if (jl_t0)          // ... or the table entry
+                            q_addr <= JL_TABLE + {7'd0, jl_data, 1'b0};
+                        ast <= sn_trig ? A_SN0 : jl_t0 ? A_JL : A_IDLE;
                     end else begin          // read: address setup
                         wram_aa <= q_addr[15:2];
                         wram_ab <= q_addr[15:2] + 14'd1;

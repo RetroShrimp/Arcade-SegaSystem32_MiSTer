@@ -101,6 +101,9 @@ module s32_sys (
     // ---- Dragon Ball Z: V.R. V.S.'s FD1149 protection model (board
     // descriptor byte 2 bit 6). See s32_v60bus's "FD1149 state copy".
     input  logic        prot_dbz,
+    // ---- The J.League 1994's FD1149 protection model (board descriptor
+    // byte 3 bit 0). See s32_v60bus's "FD1149 browser hook".
+    input  logic        prot_jleague,
     // ---- Rad Mobile's 837-7536 A/D board (board descriptor byte 2 bit 0):
     // one MSM6253 at $C00050 (s32_msm6253). adc_ain[8n +: 8] is channel n's
     // conversion result (unsigned).
@@ -493,7 +496,7 @@ module s32_sys (
         .adc_board(adc_board), .adc_sel(adc_sel), .adc_we(adc_we),
         .adc_offset(adc_offset), .adc_rdata(adc_rdata),
         .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
-        .prot_dbz(prot_dbz)
+        .prot_dbz(prot_dbz), .prot_jleague(prot_jleague)
         , .vid_hold(vram_cpu_hold)
     );
 
