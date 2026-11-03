@@ -32,9 +32,9 @@ its ROM address-line scramble (`rtl/sys32/s32_v25.sv`, from
 This repository contains no ROM data, no artwork, no manuals and no schematic
 scans. *Golden Axe*, *Holosseum*, *Super Visual Football*, *Super Visual
 Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*,
-*Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally* and *System 32* are
-trademarks of
-SEGA;
+*Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and
+*System 32* are trademarks of
+SEGA; *F1* is a trademark of Formula One Licensing B.V.;
 *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of
 Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an unaffiliated
 hardware-preservation project. Use it only with ROMs you are legally entitled

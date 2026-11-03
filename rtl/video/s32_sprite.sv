@@ -71,6 +71,9 @@ module s32_sprite (
     input  logic [1:0]  ctl08,
     input  logic [1:0]  ctl0a,
     input  logic        fb416,
+    // the mixer is in sprite group mode 0-3: a direct sprite's pixel bit
+    // 15 is its word 7 bit 15 instead of 1 (s32_mixer "sprite grouping")
+    input  logic        grp_w7,
 
     input  logic        start,        // render the command list once
     input  logic        abort,        // stop the walk now (watchdog)
@@ -357,7 +360,10 @@ module s32_sprite (
                             xpos    <= sext12(pkt[5])
                                      + (pkt[0][4] ? gxofs : 13'sd0);
                             addr0   <= {pkt[2][15:12], pkt[6]};
-                            color   <= 16'h8000 |
+                            // bit 15: the sprite's own word 7 bit 15 in
+                            // mixer group modes 0-3, else 1 (MAME
+                            // render_one_sprite, #16651; Q53)
+                            color   <= {grp_w7 ? pkt[7][15] : 1'b1, 15'd0} |
                                        (pkt[7] & (pkt[0][9] ? 16'h7F00
                                                             : 16'h7FF0));
                             transmask <= tmask(ctl08, ctl0a)

@@ -87,6 +87,8 @@ module s32_board (
     input  logic [35:0] trk_dx,
     input  logic [35:0] trk_dy,
     input  logic        prot_sonic,
+    // F1 Super Lap's FD1149 model (descriptor byte 2 bit 4): s32_v60bus
+    input  logic        prot_f1lap,
     // Rad Mobile's A/D board (descriptor byte 2 bit 0): s32_sys / s32_msm6253
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
@@ -176,7 +178,7 @@ module s32_board (
         .cab_vmirror(cab_vmirror), .prot_arf(prot_arf),
         .prot_brival(prot_brival), .prot_darkedge(prot_darkedge),
         .trk_board(trk_board), .trk_stb(trk_stb), .trk_dx(trk_dx),
-        .trk_dy(trk_dy), .prot_sonic(prot_sonic),
+        .trk_dy(trk_dy), .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
         .adc_board(adc_board), .adc_ain(adc_ain),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),

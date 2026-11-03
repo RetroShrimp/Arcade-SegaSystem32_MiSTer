@@ -70,7 +70,11 @@ module s32_mixer (
 
     // output stream (2 cycles behind px_valid)
     output logic        rgb_valid,
-    output logic [14:0] rgb           // {b[4:0], g[4:0], r[4:0]}
+    output logic [14:0] rgb,          // {b[4:0], g[4:0], r[4:0]}
+
+    // sprite group modes 0-3 ($4C[3:2] = 0): the sprite engine takes
+    // pixel bit 15 from the sprite's word 7 (see "sprite grouping")
+    output logic        spr_grp_w7
 );
 
     // ------------------------------------------------------ register file
@@ -207,30 +211,40 @@ module s32_mixer (
     // control regs $00-$1E give priority/palbase/mixshift. Sprite
     // effpri = {prio, 3'd7} — sprites win every tiebreak; a priority-0
     // group lands below the background (effpri 7 < 8) = invisible.
+    //   Modes 0-3 (MAME master since #16651, 336230f88fa): the group's
+    // top bit is pixel bit 15, which the sprite engine then takes from the
+    // sprite's word 7 bit 15 rather than forcing it to 1 (spr_grp_w7,
+    // below; s32_sprite). Mode 0 is one bit at 15, mode 3 four bits at
+    // 12. The old model added a fixed group offset (1/2/4/8) to a field
+    // one bit narrower; #16651 replaced it on game pictures (dbzvrvs,
+    // f1lap; mametesters 6100), not a board. s32tech marks word 7 bit 15
+    // unused (line 1284). Q53 holds the hardware question.
     logic [15:0] r4c;
     assign r4c = mreg[6'h26];         // $4C
-    logic [3:0] sgshift_m4;           // shift - 10 (10..14 -> 0..4)
-    logic [3:0] sgmask, sgor;
+    logic [3:0] sgshift_m4;           // shift - 10 (10..15 -> 0..5)
+    logic [3:0] sgmask;
     always_comb begin
         unique case (r4c[3:0])
-            4'h0: begin sgshift_m4 = 4'd4; sgmask = 4'h0; sgor = 4'h1; end
-            4'h1: begin sgshift_m4 = 4'd4; sgmask = 4'h1; sgor = 4'h2; end
-            4'h2: begin sgshift_m4 = 4'd3; sgmask = 4'h3; sgor = 4'h4; end
-            4'h3: begin sgshift_m4 = 4'd2; sgmask = 4'h7; sgor = 4'h8; end
-            4'h4: begin sgshift_m4 = 4'd4; sgmask = 4'h1; sgor = 4'h0; end
-            4'h5: begin sgshift_m4 = 4'd3; sgmask = 4'h3; sgor = 4'h0; end
-            4'h6: begin sgshift_m4 = 4'd2; sgmask = 4'h7; sgor = 4'h0; end
-            4'h7: begin sgshift_m4 = 4'd1; sgmask = 4'hF; sgor = 4'h0; end
-            4'h8: begin sgshift_m4 = 4'd4; sgmask = 4'h1; sgor = 4'h0; end
-            4'h9: begin sgshift_m4 = 4'd3; sgmask = 4'h3; sgor = 4'h0; end
-            4'hA: begin sgshift_m4 = 4'd2; sgmask = 4'h7; sgor = 4'h0; end
-            4'hB: begin sgshift_m4 = 4'd1; sgmask = 4'hF; sgor = 4'h0; end
-            4'hC: begin sgshift_m4 = 4'd3; sgmask = 4'h1; sgor = 4'h0; end
-            4'hD: begin sgshift_m4 = 4'd2; sgmask = 4'h3; sgor = 4'h0; end
-            4'hE: begin sgshift_m4 = 4'd1; sgmask = 4'h7; sgor = 4'h0; end
-            default: begin sgshift_m4 = 4'd0; sgmask = 4'hF; sgor = 4'h0; end
+            4'h0: begin sgshift_m4 = 4'd5; sgmask = 4'h1; end
+            4'h1: begin sgshift_m4 = 4'd4; sgmask = 4'h3; end
+            4'h2: begin sgshift_m4 = 4'd3; sgmask = 4'h7; end
+            4'h3: begin sgshift_m4 = 4'd2; sgmask = 4'hF; end
+            4'h4: begin sgshift_m4 = 4'd4; sgmask = 4'h1; end
+            4'h5: begin sgshift_m4 = 4'd3; sgmask = 4'h3; end
+            4'h6: begin sgshift_m4 = 4'd2; sgmask = 4'h7; end
+            4'h7: begin sgshift_m4 = 4'd1; sgmask = 4'hF; end
+            4'h8: begin sgshift_m4 = 4'd4; sgmask = 4'h1; end
+            4'h9: begin sgshift_m4 = 4'd3; sgmask = 4'h3; end
+            4'hA: begin sgshift_m4 = 4'd2; sgmask = 4'h7; end
+            4'hB: begin sgshift_m4 = 4'd1; sgmask = 4'hF; end
+            4'hC: begin sgshift_m4 = 4'd3; sgmask = 4'h1; end
+            4'hD: begin sgshift_m4 = 4'd2; sgmask = 4'h3; end
+            4'hE: begin sgshift_m4 = 4'd1; sgmask = 4'h7; end
+            default: begin sgshift_m4 = 4'd0; sgmask = 4'hF; end
         endcase
     end
+    // modes 0-3: the sprite engine passes word 7 bit 15 into the pixel
+    assign spr_grp_w7 = (r4c[3:2] == 2'b00);
     logic [4:0]  sgshift;
     assign sgshift = 5'd10 + {1'b0, sgshift_m4};
     logic [15:0] sprshadowmask;
@@ -243,7 +257,7 @@ module s32_mixer (
     // per-pixel sprite candidate
     logic [3:0]  sgrp, seffgrp;
     assign sgrp = 4'(pix_sprite >> sgshift) & sgmask;
-    assign seffgrp = sgor | sgrp;
+    assign seffgrp = sgrp;
     logic [15:0] sgctl;
     assign sgctl = mreg[{2'd0, seffgrp}];         // $00 + 2*effgroup
     layctl_t sprent;

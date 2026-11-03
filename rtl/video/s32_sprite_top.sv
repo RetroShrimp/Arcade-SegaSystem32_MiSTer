@@ -63,6 +63,10 @@ module s32_sprite_top (
     // frame sync (auto mode trigger point)
     input  logic        ev_vblank_out,
 
+    // the mixer is in sprite group mode 0-3 (s32_video spr_grp_w7): each
+    // sprite's pixel bit 15 comes from its word 7 (s32_sprite grp_w7)
+    input  logic        grp_w7,
+
     // sprite RAM read port (passed through from the engine)
     output logic        sr_re,
     output logic [15:0] sr_addr,
@@ -125,7 +129,7 @@ module s32_sprite_top (
     logic        e_shadow;
     s32_sprite u_eng (
         .clk(clk), .rst(rst), .cen(cen),
-        .ctl08(l08), .ctl0a(l0a), .fb416(l0c),
+        .ctl08(l08), .ctl0a(l0a), .fb416(l0c), .grp_w7(grp_w7),
         .start(eng_start), .abort(eng_abort), .busy(eng_busy),
         .sr_re(sr_re), .sr_addr(sr_addr), .sr_rdata(sr_rdata),
         .rom_re(rom_re), .rom_addr(rom_addr), .rom_rdata(rom_rdata),

@@ -414,6 +414,13 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          bit 2 COIN2, bit 3 COIN1, bit 4 the second service button, no
 //          start buttons (MAME INPUT_PORTS_START(alien3);
 //          docs/alien3-bringup.md)
+//   byte 1 bit 3  paddle-shift harness (F1 Super Lap), with bit 0: Gear Up,
+//          Gear Down and Overtake, momentary buttons, on P1_A bits 0-2 in
+//          place of Light and Wiper (MAME INPUT_PORTS_START(f1lap);
+//          docs/f1lap-bringup.md)
+//   byte 1 bit 4  FD1149 protection module 317-0210 (F1 Super Lap, f1lap
+//          and f1lapj; not the unprotected f1lapt): s32_v60bus's vblank
+//          writes (MAME init_f1lap)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -470,7 +477,13 @@ end
 // bit 0 of its player's port and its button (pad button 2) on bit 1; bits
 // 2-7 unused (MAME INPUT_PORTS_START(alien3)). The guns' aim is below.
 wire gun_harness = adc_board & board_cfg2[2];
+// Paddle-shift harness (board_cfg2[3], F1 Super Lap): Gear Up (pad button
+// 3) on P1_A bit 0, Gear Down (button 4) on bit 1, Overtake (button 5) on
+// bit 2, all momentary; bits 3-7 unused (MAME INPUT_PORTS_START(f1lap)).
+wire paddle_harness = adc_board & board_cfg2[3];
 wire [7:0] in_p1 = gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
+                 : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],
+                                    joystick_0[6]}
                  : (adc_board & gear_harness) ? ~{7'd0, gear_lever}
                  : adc_board ? ~{5'd0, joystick_0[11], joystick_0[6], 1'b0}
                  : trk_board ? ~{5'd0, joystick_2[4], 1'b0, joystick_0[4]}
@@ -693,6 +706,7 @@ s32_board board
 	.trk_dx({trk_step[4], trk_step[2], trk_step[0]}),
 	.trk_dy({trk_step[5], trk_step[3], trk_step[1]}),
 	.prot_sonic(board_cfg[7]),
+	.prot_f1lap(board_cfg2[4]),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),
 

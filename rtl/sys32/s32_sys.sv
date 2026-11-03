@@ -95,6 +95,9 @@ module s32_sys (
     // ---- SegaSonic's FD1149 protection model (board descriptor bit 7).
     // See s32_v60bus's "FD1149 level load".
     input  logic        prot_sonic,
+    // ---- F1 Super Lap's FD1149 protection model (board descriptor byte 2
+    // bit 4). See s32_v60bus's "FD1149 vblank writes (f1lap)".
+    input  logic        prot_f1lap,
     // ---- Rad Mobile's 837-7536 A/D board (board descriptor byte 2 bit 0):
     // one MSM6253 at $C00050 (s32_msm6253). adc_ain[8n +: 8] is channel n's
     // conversion result (unsigned).
@@ -483,7 +486,7 @@ module s32_sys (
         .trk_offset(trk_offset), .trk_rdata(trk_rdata),
         .adc_board(adc_board), .adc_sel(adc_sel), .adc_we(adc_we),
         .adc_offset(adc_offset), .adc_rdata(adc_rdata),
-        .prot_sonic(prot_sonic)
+        .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap)
         , .vid_hold(vram_cpu_hold)
     );
 
@@ -680,6 +683,9 @@ module s32_sys (
     logic [14:0] vid_rgb;
     assign rgb = vid_rgb;
 
+    // mixer sprite group mode 0-3 -> the sprite engine's pixel bit 15
+    // (s32_mixer "sprite grouping"; MAME #16651, Q53)
+    logic spr_grp_w7;
     s32_video u_vid (
         .clk(clk), .rst(rst), .cen_pix(cen_pix),
         .cen_ren(cen_ren),
@@ -695,7 +701,7 @@ module s32_sys (
         .cab_vmirror(cab_vmirror),
         .disp_en(io_cnt[1]),          // CNT1 display enable
         .de(de), .rgb(vid_rgb), .hblank(hblank), .vblank(vblank),
-        .hs(hs), .vs(vs), .wide(vid_wide),
+        .hs(hs), .vs(vs), .wide(vid_wide), .spr_grp_w7(spr_grp_w7),
         .ev_vblank_in(ev_vbin), .ev_vblank_out(ev_vbout)
         , .vram_go(vram_go), .vram_cpu_hold(vram_cpu_hold),
         .vram_rf_req(vram_rf_req), .vram_rf_addr(vram_rf_addr),
@@ -730,7 +736,7 @@ module s32_sys (
         .clk(clk), .rst(rst), .cen(spr_cen),
         .cpu_sel(sc_sel), .cpu_we(sc_we), .cpu_addr(sc_addr),
         .cpu_wdata(sc_wdata), .cpu_bsel(sc_bsel), .cpu_rdata(sc_rdata),
-        .ev_vblank_out(ev_vbout),
+        .ev_vblank_out(ev_vbout), .grp_w7(spr_grp_w7),
         .sr_re(sr_re), .sr_addr(sr_raddr), .sr_rdata(sr_rdata),
         .rom_re(srom_re), .rom_addr(srom_addr), .rom_rdata(srom_data),
         .fb_we(fb_we), .fb_bank(fb_bank), .fb_x(fb_x), .fb_y(fb_y),

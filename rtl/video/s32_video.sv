@@ -119,6 +119,11 @@ module s32_video (
     // when set), s32_board its frame-buffer line length.
     output logic        wide,
 
+    // the mixer is in sprite group mode 0-3 ($61004C[3:2] = 0): the sprite
+    // engine takes pixel bit 15 from each sprite's word 7 (s32_mixer
+    // "sprite grouping", MAME #16651; Q53)
+    output logic        spr_grp_w7,
+
     // interrupt controller events (single-cycle pulses)
     output logic        ev_vblank_in, // entering vblank (line 224)
     output logic        ev_vblank_out // leaving vblank (line 0)
@@ -1089,7 +1094,8 @@ module s32_video (
         .pix_sprite(spr_q),
         .pal_re_a(), .pal_addr_a(paa), .pal_rdata_a(prda),
         .pal_re_b(), .pal_addr_b(pab), .pal_rdata_b(prdb),
-        .rgb_valid(rgb_valid), .rgb(mix_rgb)
+        .rgb_valid(rgb_valid), .rgb(mix_rgb),
+        .spr_grp_w7(spr_grp_w7)
     );
 
     // -------------------------------------------------- line sequencer

@@ -32,7 +32,8 @@
 //
 // Burning Rival's FD1149 protection module (prot_brival): see the
 // "FD1149 flag words" block below. Dark Edge's (prot_darkedge): the
-// "FD1149 vblank writes" block. SegaSonic's (prot_sonic): the "FD1149
+// "FD1149 vblank writes" block, which F1 Super Lap's (prot_f1lap) shares
+// in its own four states. SegaSonic's (prot_sonic): the "FD1149
 // level load" block. SegaSonic's trackball board (trk_board): uPD4701A
 // counters at I/O offsets 40-57 (R_TRK; s32_upd4701). Rad Mobile's A/D
 // board (adc_board): an MSM6253 at I/O offsets 50-57 (R_ADC; s32_msm6253).
@@ -178,7 +179,12 @@ module s32_v60bus (
 
     // ---- SegaSonic's FD1149 protection module (descriptor bit 7): a V60
     //      write to $20E5C4 loads the level (see "FD1149 level load")
-    input  logic        prot_sonic
+    input  logic        prot_sonic,
+
+    // ---- F1 Super Lap's FD1149 protection module (descriptor byte 1
+    //      bit 4): at each vblank-in it writes work RAM, as Dark Edge's
+    //      does (fd_vbl, bcu_pend; see "FD1149 vblank writes (f1lap)")
+    input  logic        prot_f1lap
 );
 
     // ------------------------------------------------------ work RAM
@@ -216,7 +222,6 @@ module s32_v60bus (
                       wram_qa_l[1], wram_qa_l[0]};
     assign wram_qb = {wram_qb_l[3], wram_qb_l[2],
                       wram_qb_l[1], wram_qb_l[0]};
-
 
     // ------------------------------------------------ sprite list RAM
     // a 16-bit "port" so the serializer treats it like the video and
@@ -376,7 +381,8 @@ module s32_v60bus (
         A_FD0, A_FD1, A_FD2, A_FD3,
         // appended so every earlier state keeps its encoding (the benches
         // compare ast with 0, 4 and 7)
-        A_SN0, A_SN1, A_SN2, A_SN3, A_SN4, A_SN5, A_SN6
+        A_SN0, A_SN1, A_SN2, A_SN3, A_SN4, A_SN5, A_SN6,
+        A_FL0, A_FL1, A_FL2, A_FL3
     } astate_e;
     astate_e ast;
 
@@ -466,6 +472,26 @@ module s32_v60bus (
     // read timing) and writes the countdown back.
     logic fd_pend;                   // a vblank-in is owed its writes
 
+    // ------------------------------- FD1149 vblank writes (f1lap)
+    // F1 Super Lap (f1lap, f1lapj) carries FD1149 317-0210 (MAME's header
+    // above ROM_START(f1lap)), undumped like the others. MAME's hook, run
+    // at every vblank-in (segas32_m.cpp f1lap_fd1149_vblank): byte 0 to
+    // $20F7C6, and if byte $20EE81 reads $FF it is set to 0 ("needed to
+    // start a game"). The factory-unprotected set f1lapt has no hook and
+    // does not get this model (MAME init_f1lapt). The two programs are
+    // different builds, not a patch of one another, so unlike SegaSonic's
+    // the module's effect is MAME's reading, not one proved from the code
+    // (docs/f1lap-bringup.md; Q57).
+    //   The module takes the bus exactly as Dark Edge's does (fd_go, the
+    // same four-state shape and read timing):
+    //   A_FL0  $20F7C6 = 0; set up the read of $20EE80 (lane 1 = $EE81)
+    //   A_FL1  BRAM read      A_FL2  OREGA stage
+    //   A_FL3  $20EE81 = 0 if it read $FF; release the bus
+    // As for Dark Edge, MAME runs the hook between V60 instructions and
+    // here it can fall between the bus cycles of one instruction.
+    localparam logic [13:0] FL_WF7C4 = 14'h3DF1;  // $20F7C6 >> 2, lane 2
+    localparam logic [13:0] FL_WEE80 = 14'h3BA0;  // $20EE81 >> 2, lane 1
+
     // ---------------------------------------- FD1149 level load (sonic)
     // SegaSonic rev C carries an FD1149, 317-0213 (MAME's comment above
     // ROM_START(sonic)). MAME models it as a write handler on $20E5C4-5
@@ -519,7 +545,6 @@ module s32_v60bus (
             2'd3: wram_bytes = wram_pair[55:24];
         endcase
     end
-
 
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
@@ -736,7 +761,7 @@ module s32_v60bus (
             romf_pc_r <= 24'd0;
             fd_pend <= 1'b0;
         end else begin
-            if (fd_vbl && prot_darkedge) fd_pend <= 1'b1;
+            if (fd_vbl && (prot_darkedge || prot_f1lap)) fd_pend <= 1'b1;
             else if (ast == A_IDLE && fd_go) fd_pend <= 1'b0;
 
             unique case (ast)
@@ -798,7 +823,7 @@ module s32_v60bus (
                             ast <= A_SUB_P;
                     endcase
                 end else if (fd_go)
-                    ast <= A_FD0;
+                    ast <= prot_f1lap ? A_FL0 : A_FD0;
 
                 // FD1149 vblank writes (Dark Edge): see the block above
                 A_FD0: begin                // $20F072 = 0; read $20A12C
@@ -829,6 +854,25 @@ module s32_v60bus (
                             wram_waddr[2] <= FD_W12C;
                             wram_wd[2]    <= 8'd1;
                         end
+                    end
+                    ast <= A_IDLE;
+                end
+
+                // FD1149 vblank writes (F1 Super Lap): see the block above
+                A_FL0: begin                // $20F7C6 = 0; read $20EE81
+                    wram_wen[2]   <= 1'b1;
+                    wram_waddr[2] <= FL_WF7C4;
+                    wram_wd[2]    <= 8'd0;
+                    wram_aa <= FL_WEE80;    // lane 1 is not written here
+                    ast <= A_FL1;
+                end
+                A_FL1: ast <= A_FL2;        // BRAM stage-1 read
+                A_FL2: ast <= A_FL3;        // OREGA stage
+                A_FL3: begin                // $20EE81 in lane 1
+                    if (wram_qa[15:8] == 8'hFF) begin
+                        wram_wen[1]   <= 1'b1;
+                        wram_waddr[1] <= FL_WEE80;
+                        wram_wd[1]    <= 8'd0;
                     end
                     ast <= A_IDLE;
                 end
@@ -983,6 +1027,5 @@ module s32_v60bus (
             endcase
         end
     end
-
 
 endmodule

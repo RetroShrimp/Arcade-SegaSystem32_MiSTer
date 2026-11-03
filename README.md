@@ -6,13 +6,13 @@ around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Spider-Man: The Videogame**, **Holosseum**, **Super Visual Football**,
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
 Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream**, **Alien3: The
-Gun** and **Rad Rally**, which use the same board.
+Gun**, **Rad Rally** and **F1 Super Lap**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
 system and the protection module of Golden Axe and Arabian Fight, each running at its original
-clock. (The protection modules of Burning Rival, Dark Edge and SegaSonic
-have never been read out; see Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
+clock. (The protection modules of Burning Rival, Dark Edge, SegaSonic and
+F1 Super Lap have never been read out; see Accuracy.) The NEC V60 was written from scratch for this core; as far as we know
 it is the first FPGA implementation of that CPU.
 
 ## Supported games
@@ -45,9 +45,12 @@ it is the first FPGA implementation of that CPU.
 | `Alien3 - The Gun.mra` | `alien3` | tested on hardware |
 | `Alien3 - The Gun (US).mra` | `alien3u` | not yet tested on hardware |
 | `Alien3 - The Gun (Japan).mra` | `alien3j` | not yet tested on hardware |
-| `Rad Rally.mra` | `radr` | not yet tested on hardware |
+| `Rad Rally.mra` | `radr` | tested on hardware |
 | `Rad Rally (US).mra` | `radru` | not yet tested on hardware |
 | `Rad Rally (Japan).mra` | `radrj` | not yet tested on hardware |
+| `F1 Super Lap.mra` | `f1lap` | tested on hardware |
+| `F1 Super Lap (Unprotected).mra` | `f1lapt` | runs in simulation; not yet tested on hardware |
+| `F1 Super Lap (Japan).mra` | `f1lapj` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -76,8 +79,9 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `brival.zip` (plus `brivalj.zip`), `darkedge.zip` (plus
    `darkedgej.zip`), `sonic.zip` (plus `sonicp.zip`), `radm.zip`
    (plus `radmu.zip`), `slipstrm.zip` (plus `slipstrmh.zip`),
-   `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`), and `radr.zip`
-   (plus `radru.zip` or `radrj.zip`).
+   `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`), `radr.zip`
+   (plus `radru.zip` or `radrj.zip`), and `f1lap.zip` (plus `f1lapt.zip`
+   or `f1lapj.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -162,6 +166,13 @@ is set to Manual. Rad Rally cabinets could be linked for multi-player
 races; the core has no link board, which is a cabinet without the link
 kit, and the game then runs as a single cabinet. Its course select is 416
 pixels wide and its races 320.
+
+**F1 Super Lap** uses Rad Mobile's wheel and pedals, read the same way.
+The cabinet's two gear paddles and its Overtake button are Gear Up (R),
+Gear Down (L) and Overtake (X); Start is Start and Coin is Select, and
+Service and Test have no default. One credit starts a race. Like Rad
+Rally, it was built to link cabinets; the core has no link board, and the
+game runs as a single cabinet.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -295,6 +306,20 @@ Things you may notice, or may want to know:
   and the byte the game writes at `$C00074` is not documented; the core
   resets a counter on any write to it, as MAME does, and ignores
   `$C00074`.
+- **F1 Super Lap's protection** (`f1lap` and `f1lapj`) is a fourth FD1149
+  module whose program has never been read out. At the start of every
+  vertical blank it clears one byte of the game's work RAM, and another if
+  it holds $FF; MAME notes that a game cannot start without it. The core
+  makes the same writes, as for Dark Edge. The factory-unprotected set
+  (`f1lapt`) has no module, but its program is a different build rather
+  than a patched copy, so it does not show what the module does.
+- **Sprite group modes 0-3 (F1 Super Lap).** In these mixer modes the top
+  bit of a sprite pixel's priority group comes from bit 15 of the sprite's
+  colour word. The core follows current MAME (mamedev/mame#16651), which
+  changed this on the evidence of game pictures; the hardware notes mark
+  that bit unused, and the sprite chip and the mixer are separate chips,
+  so how the real board does it is not known. No other game here uses
+  these modes.
 - **Rad Mobile's A/D board.** The converter takes the wheel and pedal
   positions as they are when the game asks for a channel, as MAME does. The
   real chip converts continuously, so its value can be up to one conversion
@@ -371,6 +396,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally* and *System 32* are trademarks of SEGA; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.
