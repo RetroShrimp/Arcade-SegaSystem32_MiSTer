@@ -93,6 +93,8 @@ module s32_board (
     input  logic        prot_dbz,
     // The J.League's FD1149 model (descriptor byte 3 bit 0): s32_v60bus
     input  logic        prot_jleague,
+    // F1 Exhaust Note's bridge board (descriptor byte 3 bit 1): s32_v60bus
+    input  logic        brg_board,
     // Rad Mobile's A/D board (descriptor byte 2 bit 0): s32_sys / s32_msm6253
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
@@ -187,6 +189,7 @@ module s32_board (
         .trk_board(trk_board), .trk_stb(trk_stb), .trk_dx(trk_dx),
         .trk_dy(trk_dy), .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
         .prot_dbz(prot_dbz), .prot_jleague(prot_jleague),
+        .brg_board(brg_board),
         .adc_board(adc_board), .adc_ain(adc_ain), .jp_drive(jp_drive),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),

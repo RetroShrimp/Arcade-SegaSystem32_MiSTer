@@ -442,6 +442,14 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //   byte 2 bit 0  FD1149 protection module 317-0222 (The J.League 1994):
 //          s32_v60bus's browser hook on writes to $20F700/$20F704 (MAME
 //          init_jleague; docs/jleague-bringup.md)
+//   byte 2 bit 1  F1 Exhaust Note's seat, with byte 1 bit 0: the main seat
+//          of the game's two-board cabinet with no partner board. The
+//          bridge board's RAM at $810000 and main/sub register at $818000
+//          (s32_v60bus "bridge board"; MAME sega_system32_dual_direct,
+//          init_f1en), and the seat's harness: Gear Up and Gear Down,
+//          momentary buttons, on P1_A bits 0/1; every other P1_A bit,
+//          COIN2 and START2 unused (MAME INPUT_PORTS_START(f1en), the
+//          mainpcb half; docs/f1en-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -512,9 +520,14 @@ wire stick_harness = adc_board & board_cfg2[5];
 // on bit 0 of its player's port, bits 1-7 unused; the guns' aim is below,
 // the drive board in s32_sys (s32_jpdrive).
 wire jp_cab = adc_board & board_cfg2[7];
+// F1 Exhaust Note's seat (board_cfg3[1]): Gear Up (pad button 3) on P1_A
+// bit 0, Gear Down (button 4) on bit 1, momentary; bits 2-7 unused (MAME
+// INPUT_PORTS_START(f1en)). The bridge board is in s32_v60bus.
+wire f1en_seat = adc_board & board_cfg3[1];
 wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
                  : jp_cab ? ~{7'd0, joystick_0[4]}
                  : gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
+                 : f1en_seat ? ~{6'd0, joystick_0[11], joystick_0[6]}
                  : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],
                                     joystick_0[6]}
                  : (adc_board & gear_harness) ? ~{7'd0, gear_lever}
@@ -587,7 +600,7 @@ wire [7:0] in_service12 = gun_harness ? ~{
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
 	joystick_1[7] & (~adc_board | stick_harness | jp_cab), // START2
 	joystick_0[7],                                // START1
-	us_cab ? joystick_2[8] : joystick_1[8],       // COIN2 (World) / COIN3 (US)
+	us_cab ? joystick_2[8] : (joystick_1[8] & ~f1en_seat), // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
 	test_btn,                                     // TEST
 	joystick_0[9] | joystick_1[9]};               // SERVICE (service credit)
@@ -747,6 +760,7 @@ s32_board board
 	.prot_f1lap(board_cfg2[4]),
 	.prot_dbz(board_cfg2[6]),
 	.prot_jleague(board_cfg3[0]),
+	.brg_board(f1en_seat),
 	.jp_drive(jp_cab),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),

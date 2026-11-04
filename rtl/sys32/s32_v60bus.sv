@@ -38,6 +38,8 @@
 // state copy" block. SegaSonic's trackball board (trk_board): uPD4701A
 // counters at I/O offsets 40-57 (R_TRK; s32_upd4701). Rad Mobile's A/D
 // board (adc_board): an MSM6253 at I/O offsets 50-57 (R_ADC; s32_msm6253).
+// F1 Exhaust Note's bridge board (brg_board): the "bridge board" block, the
+// $810000-$81FFFF window (R_BRG).
 
 module s32_v60bus (
     input  logic        clk,
@@ -195,7 +197,12 @@ module s32_v60bus (
     // ---- The J.League 1994's FD1149 protection module (descriptor byte 2
     //      bit 0): V60 writes to work RAM $20F700/$20F704 set $20F708 from
     //      a ROM table and $200016 (see "FD1149 browser hook (jleague)")
-    input  logic        prot_jleague
+    input  logic        prot_jleague,
+
+    // ---- F1 Exhaust Note's bridge board (descriptor byte 2 bit 1): the
+    //      shared RAM and main/sub register at $810000-$81FFFF, seen from
+    //      the main seat with no partner board (see "bridge board")
+    input  logic        brg_board
 );
 
     // ------------------------------------------------------ work RAM
@@ -287,14 +294,68 @@ module s32_v60bus (
             sr_rdata <= {sprram_h[sr_addr_used], sprram_l[sr_addr_used]};
     end
 
+    // ------------------------------------------------- bridge board
+    // F1 Exhaust Note (brg_board): MAME builds the cabinet as two analog
+    // boards, one per seat, and a bridge board "sitting underneath the ROM
+    // board bridging 2 PCBs (not a network link)" (segas32.cpp
+    // sega_system32_dual_direct). init_f1en() maps, on each board:
+    //   $810000-$810FFF  the shared RAM, 2K x 16 (dual_pcb_comms_r/_w;
+    //                    filled with $FF at init)
+    //   $818000-$818003  main/sub: 0 on the main board, 1 on the sub
+    //                    (dual_pcb_mainsub / dual_pcb_sub; read only)
+    // and nothing else in $810000-$81FFFF, which reads open bus here.
+    //
+    // The core is the main seat with no partner (docs/f1en-bringup.md):
+    // the register reads 0, and only this board writes the RAM. The boot
+    // code takes the main role on bit 0 = 0 (FF6394), times out waiting
+    // for the other seat and plays unlinked; on open bus it would take the
+    // sub role and wait forever at FF63ED (MAME, tools/mame/f1en_probe.lua).
+    // What drives the bit on a real cabinet, and how its RAM powers up, is
+    // Q63; the $FF fill is MAME's. Writes to the register and to the open
+    // part of the window are dropped.
+    //
+    // Two 8-bit lane arrays, as the sprite RAM: a byte write is one lane
+    // write, never a read-merge-write. One registered read per lane, one
+    // port, so no read can collide with a write to the same address.
+    logic        brg_sel, brg_we;
+    logic [1:0]  brg_bsel;
+    logic [15:1] brg_addr;
+    logic [15:0] brg_wdata, brg_q, brg_rdata;
+    logic [1:0]  brg_kind;               // 0 RAM, 1 main/sub, 2 open bus
+    logic [7:0]  brgram_l [0:2047];
+    logic [7:0]  brgram_h [0:2047];
+    initial begin
+        for (int i = 0; i < 2048; i++) begin
+            brgram_l[i] = 8'hFF;
+            brgram_h[i] = 8'hFF;
+        end
+    end
+    wire brg_ram = (brg_addr[15:12] == 4'h0);
+    always_ff @(posedge clk) begin
+        if (brg_sel && brg_we && brg_ram && brg_bsel[0])
+            brgram_l[brg_addr[11:1]] <= brg_wdata[7:0];
+        brg_q[7:0] <= brgram_l[brg_addr[11:1]];
+    end
+    always_ff @(posedge clk) begin
+        if (brg_sel && brg_we && brg_ram && brg_bsel[1])
+            brgram_h[brg_addr[11:1]] <= brg_wdata[15:8];
+        brg_q[15:8] <= brgram_h[brg_addr[11:1]];
+    end
+    always_ff @(posedge clk)
+        if (brg_sel)
+            brg_kind <= brg_ram ? 2'd0
+                      : (brg_addr[15:2] == 14'h2000) ? 2'd1 : 2'd2;
+    assign brg_rdata = (brg_kind == 2'd0) ? brg_q
+                     : (brg_kind == 2'd1) ? 16'h0000 : 16'hFFFF;
+
     // ------------------------------------------------- region decode
     logic [23:0] p;
     assign p = mem_addr[23:0];
 
-    typedef enum logic [3:0] {
+    typedef enum logic [4:0] {
         R_ROM, R_WRAM, R_VID, R_SPRRAM, R_SPRCTL, R_SHM,
         R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK, R_ADC,
-        R_DZ
+        R_DZ, R_BRG
     } region_e;
 
     // mirrors (s32tech "Memory map"): the 6xxxxx video pair repeats every
@@ -309,6 +370,8 @@ module s32_v60bus (
         else if (a < 24'h600000)                     region_of = R_SPRCTL;
         else if (a[23:20] == 4'h6)                   region_of = R_VID;
         else if (a >= 24'h700000 && a < 24'h800000)  region_of = R_SHM;
+        // F1 Exhaust Note's bridge board (MAME init_f1en's handlers)
+        else if (a[23:16] == 8'h81 && brg_board)     region_of = R_BRG;
         // Dark Edge's FD1149 answers the mailbox window instead: reads
         // $FFFF, writes ignored (MAME darkedge_protection_r/_w)
         else if (a[23:19] == 5'b10100 && prot_darkedge) region_of = R_OPEN;
@@ -638,7 +701,7 @@ module s32_v60bus (
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
     assign word_port = (q_reg == R_VID) || (q_reg == R_SPRCTL) ||
-                       (q_reg == R_SPRRAM);
+                       (q_reg == R_SPRRAM) || (q_reg == R_BRG);
 
     // Register-class word ports read back something other than what was
     // written (mixer registers read $FFFF, sprite control reads live
@@ -681,8 +744,14 @@ module s32_v60bus (
     // bit fields there (0F88D6, insbfr), so the lane path is exercised.
     logic       spr_lane;
     assign spr_lane  = (q_reg == R_SPRRAM);
+    // The bridge RAM takes byte writes as lane writes as well (MAME's 16-bit
+    // handler applies mem_mask: COMBINE_DATA in dual_pcb_comms_w); f1en
+    // writes it a byte at a time (FF63CA, FF6431, FE7EFB).
+    logic       brg_lane;
+    assign brg_lane  = (q_reg == R_BRG);
     logic       rmw_req;
-    assign rmw_req = q_we && byte_lanes && !reg_class && !vram_lane && !spr_lane;
+    assign rmw_req = q_we && byte_lanes && !reg_class && !vram_lane && !spr_lane
+                   && !brg_lane;
     logic       rmw_rd;              // in the read pass right now
     assign rmw_rd = rmw_req && !rmw_done;
 
@@ -725,7 +794,7 @@ module s32_v60bus (
     logic [15:0] wr_word;
     always_comb begin
         if (byte_lanes)
-            wr_word = (reg_class || vram_lane || spr_lane) ? {2{wr_byte}}
+            wr_word = (reg_class || vram_lane || spr_lane || brg_lane) ? {2{wr_byte}}
                     : sub_a[0] ? {wr_byte, rmw_word[7:0]}
                                : {rmw_word[15:8], wr_byte};
         else
@@ -764,6 +833,7 @@ module s32_v60bus (
     logic [15:0] sub_rd16;
     assign sub_rd16 = (q_reg == R_VID)    ? vid_rdata
                     : (q_reg == R_SPRCTL) ? sc_rdata
+                    : (q_reg == R_BRG)    ? brg_rdata
                     :                       spm_rdata;
 
     // port strobes: asserted for exactly the A_SUB cycle. Every value here
@@ -802,6 +872,10 @@ module s32_v60bus (
         spm_sel = 1'b0; spm_we = 1'b0;
         spm_addr = sub_a[16:1]; spm_wdata = wr_word;
         spm_bsel = (byte_lanes && spr_lane) ? (sub_a[0] ? 2'b10 : 2'b01) : 2'b11;
+        // the bridge RAM, like the sprite RAM, is inside this module
+        brg_sel = 1'b0; brg_we = 1'b0;
+        brg_addr = sub_a[15:1]; brg_wdata = wr_word;
+        brg_bsel = (byte_lanes && brg_lane) ? (sub_a[0] ? 2'b10 : 2'b01) : 2'b11;
 
         if (o_stb) begin
             unique case (q_reg)
@@ -815,6 +889,7 @@ module s32_v60bus (
                 R_VID:    begin vid_sel = 1'b1; vid_we = o_we; end
                 R_SPRCTL: begin sc_sel = 1'b1; sc_we = o_we; end
                 R_SPRRAM: begin spm_sel = 1'b1; spm_we = o_we; end
+                R_BRG:    begin brg_sel = 1'b1; brg_we = o_we; end
                 default: ;
             endcase
         end

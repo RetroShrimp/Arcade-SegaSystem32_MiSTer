@@ -7,7 +7,8 @@ around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
 Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream**, **Alien3: The
 Gun**, **Rad Rally**, **F1 Super Lap**, **Dragon Ball Z: V.R. V.S.**,
-**Jurassic Park** and **The J.League 1994**, which use the same board.
+**Jurassic Park**, **The J.League 1994** and **F1 Exhaust Note**, which
+use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -59,6 +60,9 @@ it is the first FPGA implementation of that CPU.
 | `Jurassic Park (Japan, Conversion).mra` | `jparkjc` | not yet tested on hardware |
 | `The J.League 1994.mra` | `jleague` | tested on hardware |
 | `The J.League 1994 (Original).mra` | `jleagueo` | runs in simulation; not yet tested on hardware |
+| `F1 Exhaust Note.mra` | `f1en` | tested on hardware |
+| `F1 Exhaust Note (US).mra` | `f1enu` | not yet tested on hardware |
+| `F1 Exhaust Note (Japan).mra` | `f1enj` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -90,7 +94,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    `alien3.zip` (plus `alien3u.zip` or `alien3j.zip`), `radr.zip`
    (plus `radru.zip` or `radrj.zip`), `f1lap.zip` (plus `f1lapt.zip`
    or `f1lapj.zip`), `dbzvrvs.zip`, `jpark.zip` (plus `jparkj.zip`,
-   `jparkja.zip` or `jparkjc.zip`), and `jleague.zip` or `jleagueo.zip`.
+   `jparkja.zip` or `jparkjc.zip`), `jleague.zip` or `jleagueo.zip`,
+   and `f1en.zip` (plus `f1enu.zip` or `f1enj.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -201,6 +206,15 @@ the game then starts as on a real cabinet.
 **The J.League 1994** is the Japanese edition of Super Visual Football, on
 the same board with the same controls: Shoot (A), Pass A (B) and Pass B
 (X), Start is Start and Coin is Select; Service and Test have no default.
+
+**F1 Exhaust Note** uses Rad Mobile's wheel and pedals, read the same way,
+with two gear buttons, Gear Up (R) and Gear Down (L); Start is Start and
+Coin is Select, and Service and Test have no default. Its cabinet is a
+twin, one board per seat, the two boards joined so that two players can
+race each other. The core is one board: the left-hand seat, with its
+partner switched off. The game waits a few seconds for the other seat,
+then plays a one-player race; the twin's "READY FOR ENTRY" window for a
+second player does not open.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -348,6 +362,13 @@ Things you may notice, or may want to know:
   and without that copy the game never leaves its first, empty screen.
   The core does the copy as MAME does, as part of the command write, and
   always reads ready; how long the real module takes is not known.
+- **F1 Exhaust Note's seat.** The twin cabinet's two boards share a small
+  RAM on a bridge board, and a signal tells each board which seat it is.
+  The core is the first seat with the bridge board fitted and nobody on
+  the other side, the case the game's own code handles by giving up on
+  its partner and playing alone. What sets that signal on a real cabinet,
+  and what the shared RAM holds at power-on (the core fills it with $FF,
+  as MAME does), are not known.
 - **The J.League's protection** is a sixth FD1149 module whose program has
   never been read out. The original release (`jleagueo`) hands two steps of
   its menus to it: moving from the mode menu to the team browser, and
@@ -448,6 +469,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Jurassic Park* is a trademark of Universal City Studios and Amblin Entertainment; *J.League* is a trademark of the Japan Professional Football League; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap*, *F1 Exhaust Note* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Jurassic Park* is a trademark of Universal City Studios and Amblin Entertainment; *J.League* is a trademark of the Japan Professional Football League; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.
