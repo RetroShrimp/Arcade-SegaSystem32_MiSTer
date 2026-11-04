@@ -2,15 +2,22 @@
 // banking + int ctl) + two jt12 YM3438 + s32_pcm RF5C68, mixed to a
 // signed 16-bit stereo pair.
 //
-// Mix gains follow MAME segas32.cpp (ym1/ym2 0.30, rf5c68 0.40, each
-// to both speakers): out = (fm1*77 + fm2*77 + pcm*102) >>> 8 with
-// saturation. The real board mixes the three DAC outputs with op-amps;
-// the true ratios from the schematic's resistor network are not modelled.
+// Output = the board's stereo line out (CN, schematic sheet 8/9),
+// modelled by s32_lineout: the FM 7.2 kHz pole, the PCM 33 Hz high-pass
+// and 3rd-order ~14 kHz reconstruction low-pass, the shared 36 kHz
+// line-out pole, and PCM's opposite polarity to FM. Passband levels are
+// MAME segas32.cpp's (ym1/ym2 0.30, rf5c68 0.40; 77/256 and 102/256),
+// because the schematic gives topology and component values but not the
+// DACs' volts per code (OPEN-QUESTIONS Q23).
+//
+// `define S32_AUDIO_RAW restores the unfiltered mix,
+// (fm1*77 + fm2*77 + pcm*102) >>> 8 saturated, bit-exact with the core
+// before 2026-11-04 — for A/Bs against MAME, which models no analog
+// stage (the gnome-era captures were taken that way).
 //
 // YM3438 vs YM2612 DAC: jt12 models no YM2612 DAC "ladder" effect (its
 // accumulator is clean, full resolution), so the FM output already matches
-// the YM3438's DAC that the board carries. The analog chain after the DACs
-// is not modelled.
+// the YM3438's DAC that the board carries.
 //
 // Clocking: one clock domain. cen_fm paces both jt12 (8.054 MHz =
 // 32.2159 / 4; jt12's own /6 prescaler gives the 55.9 kHz sample rate),
@@ -107,31 +114,26 @@ module s32_soundtop (
         .out_l(pcm_l), .out_r(pcm_r)
     );
 
-    // ------------------------------------------- PCM reconstruction filter
-    // The RF5C68's held 10-bit output is mixed directly; the board's LC7881
-    // DAC and op-amp filter (schematic sheets 8 and 9) are not modelled.
-    wire signed [15:0] pcm_fl = pcm_l;
-    wire signed [15:0] pcm_fr = pcm_r;
+    // ------------------------------------------------ board line out
+    // The filter runs at clk/256: cen_fm is exactly clk/8 in s32_sys
+    // (cen_z80), so one tick per 32 cen_fm. s32_lineout's coefficients
+    // assume that rate (tools/s32_audio_filter.py).
+    logic [4:0] lo_div;
+    logic       lo_tick;
+    always_ff @(posedge clk)
+        if (rst) begin
+            lo_div  <= '0;
+            lo_tick <= 1'b0;
+        end else begin
+            lo_tick <= cen_fm && lo_div == 5'd31;
+            if (cen_fm) lo_div <= lo_div + 5'd1;
+        end
 
-    // --------------------------------------------------------- mixer
-    // 0.30/0.30/0.40 in /256 fixed point; max |sum| = 32768*256 fits
-    // 24 bits + sign
-    logic signed [24:0] mix_l, mix_r;
-    assign mix_l = fm1_l * 25'sd77 + fm2_l * 25'sd77 + pcm_fl * 25'sd102;
-    assign mix_r = fm1_r * 25'sd77 + fm2_r * 25'sd77 + pcm_fr * 25'sd102;
-
-    function automatic logic signed [15:0] sat16
-        (input logic signed [24:0] v);
-        logic signed [16:0] s;
-        s = v[24:8];             // >>> 8
-        if (s > 17'sd32767)       sat16 = 16'sd32767;
-        else if (s < -17'sd32768) sat16 = 16'sh8000;   // -32768
-        else                      sat16 = s[15:0];
-    endfunction
-
-    always_ff @(posedge clk) begin
-        audio_l <= sat16(mix_l);
-        audio_r <= sat16(mix_r);
-    end
+    s32_lineout u_lineout (
+        .clk(clk), .rst(rst), .tick(lo_tick),
+        .fm_l(17'(fm1_l) + 17'(fm2_l)), .fm_r(17'(fm1_r) + 17'(fm2_r)),
+        .pcm_l(pcm_l), .pcm_r(pcm_r),
+        .out_l(audio_l), .out_r(audio_r)
+    );
 
 endmodule

@@ -59,6 +59,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_soundtop.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_sound.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_sndint.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_pcm.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_lineout.sv
 
 set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80s.v
 set_global_assignment -name VERILOG_FILE rtl/sound/tv80/tv80_core.v

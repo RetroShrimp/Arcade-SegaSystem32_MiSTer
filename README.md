@@ -319,8 +319,11 @@ Things you may notice, or may want to know:
   a real board still completes here.
 - **Video sync.** Line and frame lengths come from the board; the sync pulse
   position, width and polarity have not been measured on a real board.
-- **Sound output.** The core outputs the digital mix. The board's DAC and
-  analog filter after it are not modelled.
+- **Sound levels.** The core models the board's stereo line-out filter,
+  taken from the schematic: the FM treble roll-off, and the PCM chip's
+  bass cut and reconstruction filter. The balance between FM and PCM is
+  still MAME's, because the schematic does not give the two DACs' output
+  voltages.
 - **Super Visual Football** reaches its title screen about a second later
   than in MAME. Its power-on delay is a CPU timing loop (see CPU timing
   above), and MAME's flat 8 clocks per instruction runs it faster than the
