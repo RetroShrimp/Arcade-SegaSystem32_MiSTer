@@ -202,7 +202,17 @@ module s32_v60bus (
     // ---- F1 Exhaust Note's bridge board (descriptor byte 2 bit 1): the
     //      shared RAM and main/sub register at $810000-$81FFFF, seen from
     //      the main seat with no partner board (see "bridge board")
-    input  logic        brg_board
+    input  logic        brg_board,
+    // ---- Air Rescue (descriptor byte 2 bit 2): the bridge board as above
+    //      plus the absent partner's half of the boot handshake (brg_hs),
+    //      and the 837-8341 DSP board at $A00000 (dsp_board, s32_dspbd),
+    //      whose program the ROM loader writes through dsp_ld_* while the
+    //      core is in reset (see "DSP board")
+    input  logic        brg_hs,
+    input  logic        dsp_board,
+    input  logic        dsp_ld_we,
+    input  logic [13:0] dsp_ld_addr,
+    input  logic [7:0]  dsp_ld_data
 );
 
     // ------------------------------------------------------ work RAM
@@ -314,10 +324,24 @@ module s32_v60bus (
     // Q63; the $FF fill is MAME's. Writes to the register and to the open
     // part of the window are dropped.
     //
+    // Air Rescue (brg_hs) uses the same board, and its boot needs one thing
+    // from the partner seat: at 07DA3C the main board writes $FF to byte
+    // $810001 and loops, ANDing it with $AA, until it reads 0; only the sub
+    // board's `and.b #$55` (07DA90) can get it there, and $FF on its own
+    // sends the main board back to 06000A. With no partner the core applies
+    // that AND to every write of byte $810001, which is what the partner
+    // does to it within the handshake; MAME with the main board's bridge RAM
+    // private and only this answered matches the two-board run
+    // pixel for pixel from the coin on (tools/mame/arescue_probe.lua
+    // AR_LINK=hs; docs/arescue-bringup.md §4). It stands in for the absent
+    // board, so it is the documented exception Q64 records.
+    //
     // Two 8-bit lane arrays, as the sprite RAM: a byte write is one lane
     // write, never a read-merge-write. One registered read per lane, one
     // port, so no read can collide with a write to the same address.
     logic        brg_sel, brg_we;
+    logic        dsp_sel_p;            // DSP board strobe and read (see
+    logic [15:0] dsp_rd, dsp_q;        // "DSP board")
     logic [1:0]  brg_bsel;
     logic [15:1] brg_addr;
     logic [15:0] brg_wdata, brg_q, brg_rdata;
@@ -338,7 +362,8 @@ module s32_v60bus (
     end
     always_ff @(posedge clk) begin
         if (brg_sel && brg_we && brg_ram && brg_bsel[1])
-            brgram_h[brg_addr[11:1]] <= brg_wdata[15:8];
+            brgram_h[brg_addr[11:1]] <= brg_wdata[15:8]
+                & ((brg_hs && brg_addr[11:1] == 11'd0) ? 8'h55 : 8'hFF);
         brg_q[15:8] <= brgram_h[brg_addr[11:1]];
     end
     always_ff @(posedge clk)
@@ -355,7 +380,7 @@ module s32_v60bus (
     typedef enum logic [4:0] {
         R_ROM, R_WRAM, R_VID, R_SPRRAM, R_SPRCTL, R_SHM,
         R_DPRAM, R_IO, R_PPI, R_IC, R_RNG, R_ETMG, R_OPEN, R_TRK, R_ADC,
-        R_DZ, R_BRG
+        R_DZ, R_BRG, R_DSP
     } region_e;
 
     // mirrors (s32tech "Memory map"): the 6xxxxx video pair repeats every
@@ -374,6 +399,8 @@ module s32_v60bus (
         else if (a[23:16] == 8'h81 && brg_board)     region_of = R_BRG;
         // Dark Edge's FD1149 answers the mailbox window instead: reads
         // $FFFF, writes ignored (MAME darkedge_protection_r/_w)
+        // Air Rescue's DSP board (see "DSP board")
+        else if (a[23:19] == 5'b10100 && dsp_board)  region_of = R_DSP;
         else if (a[23:19] == 5'b10100 && prot_darkedge) region_of = R_OPEN;
         // so does Dragon Ball Z's, whose writes trigger its state copy
         else if (a[23:19] == 5'b10100 && prot_dbz)   region_of = R_DZ;
@@ -701,7 +728,8 @@ module s32_v60bus (
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
     assign word_port = (q_reg == R_VID) || (q_reg == R_SPRCTL) ||
-                       (q_reg == R_SPRRAM) || (q_reg == R_BRG);
+                       (q_reg == R_SPRRAM) || (q_reg == R_BRG) ||
+                       (q_reg == R_DSP);
 
     // Register-class word ports read back something other than what was
     // written (mixer registers read $FFFF, sprite control reads live
@@ -710,7 +738,7 @@ module s32_v60bus (
     // control that could re-fire a trigger bit. RAM-class targets (VRAM,
     // palette, sprite RAM) use read-merge-write.
     logic       reg_class;
-    assign reg_class = (q_reg == R_SPRCTL)
+    assign reg_class = (q_reg == R_SPRCTL) || (q_reg == R_DSP)
                      || (q_reg == R_VID && q_addr[23:16] == 8'h61);
 
     // Odd-address word/dword accesses to word ports go byte by byte, as
@@ -834,6 +862,7 @@ module s32_v60bus (
     assign sub_rd16 = (q_reg == R_VID)    ? vid_rdata
                     : (q_reg == R_SPRCTL) ? sc_rdata
                     : (q_reg == R_BRG)    ? brg_rdata
+                    : (q_reg == R_DSP)    ? dsp_q
                     :                       spm_rdata;
 
     // port strobes: asserted for exactly the A_SUB cycle. Every value here
@@ -876,6 +905,7 @@ module s32_v60bus (
         brg_sel = 1'b0; brg_we = 1'b0;
         brg_addr = sub_a[15:1]; brg_wdata = wr_word;
         brg_bsel = (byte_lanes && brg_lane) ? (sub_a[0] ? 2'b10 : 2'b01) : 2'b11;
+        dsp_sel_p = 1'b0;
 
         if (o_stb) begin
             unique case (q_reg)
@@ -890,10 +920,34 @@ module s32_v60bus (
                 R_SPRCTL: begin sc_sel = 1'b1; sc_we = o_we; end
                 R_SPRRAM: begin spm_sel = 1'b1; spm_we = o_we; end
                 R_BRG:    begin brg_sel = 1'b1; brg_we = o_we; end
+                R_DSP:    dsp_sel_p = 1'b1;
                 default: ;
             endcase
         end
     end
+
+    // ------------------------------------------------- DSP board
+    // Air Rescue's 837-8341 (dsp_board) sits where the other games'
+    // protection parts do, so it takes the $A00000-$A7FFFF window. MAME maps
+    // it at $A00000-$A00007 only (init_arescue); the rest of the window
+    // reads open bus here, and writes there are dropped. It is a register
+    // port: what reads back is not what was written, so a byte write carries
+    // its strobe (reg_class), never a read-merge-write. The read is
+    // registered at the strobe, as the bridge RAM's.
+    logic        dsp_hit;
+    assign dsp_hit = (o_addr[18:3] == 16'd0);
+    s32_dspbd u_dspbd (
+        .clk(clk), .rst(rst || !dsp_board),
+        // the load is not gated on dsp_board: the .mra may deliver the ROM
+        // before the board descriptor. On other games the V25 program lands
+        // in the DSP's RAMs and the DSP stays in reset.
+        .ld_we(dsp_ld_we), .ld_addr(dsp_ld_addr),
+        .ld_data(dsp_ld_data),
+        .sel(dsp_sel_p && dsp_hit), .we(o_we), .woff(o_addr[2:1]),
+        .bsel(o_bsel), .wdata(o_wword), .rdata(dsp_rd)
+    );
+    always_ff @(posedge clk)
+        if (dsp_sel_p) dsp_q <= dsp_hit ? dsp_rd : 16'hFFFF;
 
     // ------------------------------------------------------- main FSM
     // The bus unit raises a one-cycle strobe per bus cycle and waits while

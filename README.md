@@ -7,8 +7,8 @@ around **Golden Axe: The Revenge of Death Adder** (1992). It also runs
 **Arabian Fight**, **Burning Rival**, **Dark Edge**, **SegaSonic The
 Hedgehog**, **Rad Mobile**, Capcom's **Slip Stream**, **Alien3: The
 Gun**, **Rad Rally**, **F1 Super Lap**, **Dragon Ball Z: V.R. V.S.**,
-**Jurassic Park**, **The J.League 1994** and **F1 Exhaust Note**, which
-use the same board.
+**Jurassic Park**, **The J.League 1994**, **F1 Exhaust Note** and **Air
+Rescue**, which use the same board.
 
 This is not a software emulator. The core rebuilds the board chip by chip:
 the NEC V60 main CPU, Sega's custom video and system chips, the Z80 sound
@@ -63,6 +63,9 @@ it is the first FPGA implementation of that CPU.
 | `F1 Exhaust Note.mra` | `f1en` | tested on hardware |
 | `F1 Exhaust Note (US).mra` | `f1enu` | not yet tested on hardware |
 | `F1 Exhaust Note (Japan).mra` | `f1enj` | not yet tested on hardware |
+| `Air Rescue.mra` | `arescue` | tested on hardware |
+| `Air Rescue (US).mra` | `arescueu` | not yet tested on hardware |
+| `Air Rescue (Japan).mra` | `arescuej` | not yet tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -95,7 +98,8 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
    (plus `radru.zip` or `radrj.zip`), `f1lap.zip` (plus `f1lapt.zip`
    or `f1lapj.zip`), `dbzvrvs.zip`, `jpark.zip` (plus `jparkj.zip`,
    `jparkja.zip` or `jparkjc.zip`), `jleague.zip` or `jleagueo.zip`,
-   and `f1en.zip` (plus `f1enu.zip` or `f1enj.zip`).
+   `f1en.zip` (plus `f1enu.zip` or `f1enj.zip`) and `arescue.zip` (plus
+   `arescueu.zip` or `arescuej.zip`).
    Split and merged sets both work.
 
 Loading a game takes about two seconds.
@@ -215,6 +219,17 @@ race each other. The core is one board: the left-hand seat, with its
 partner switched off. The game waits a few seconds for the other seat,
 then plays a one-player race; the twin's "READY FOR ENTRY" window for a
 second player does not open.
+
+**Air Rescue** is flown with a flight stick, pad 1's left stick, and a
+throttle lever for height: pad 1's right stick up and down, or Throttle Up
+(R) and Throttle Down (L), which move the lever and leave it where it is.
+Shot (A) fires the gun and Missile (B) the missiles, the names the game's
+own input test uses; Shot also starts the game, as the cabinet has no
+start buttons. Coin is Select; Service and Test have no default. The
+cabinet is a twin like F1 Exhaust Note's, and the core is again the
+left-hand seat alone. The attract's title picture spans both seats'
+monitors, so this seat shows its left half ("Air Re"), as on the real
+cabinet's left-hand screen.
 
 Service and Test are the cabinet's two service buttons. Like the real
 buttons, they act when pressed, so they work at any time.
@@ -369,6 +384,17 @@ Things you may notice, or may want to know:
   its partner and playing alone. What sets that signal on a real cabinet,
   and what the shared RAM holds at power-on (the core fills it with $FF,
   as MAME does), are not known.
+- **Air Rescue's seat and DSP board.** Air Rescue's twin cabinet is F1
+  Exhaust Note's, but its boot waits for the other seat to answer a
+  handshake on the shared RAM, and a single real board would wait there
+  for ever. The core gives the answer the other board would give, and
+  nothing else of it. The left-hand board also carries a DSP board, a NEC
+  µPD77P25 with its own program, which the game asks to turn its state
+  numbers into the offsets its program jumps through. That program has
+  been read out, and the core runs it on a recreated µPD7725; how the DSP
+  board connects it to the main CPU has not been traced, so that part is
+  this project's reading of the two programs. MAME does not run this DSP
+  and answers in its place.
 - **The J.League's protection** is a sixth FD1149 module whose program has
   never been read out. The original release (`jleagueo`) hands two steps of
   its menus to it: moving from the mode menu to the team browser, and
@@ -469,6 +495,6 @@ Core by **RetroShrimp**.
 
 GPL-3.0-or-later. See `LICENSE`, and `NOTICE.md` for the third-party
 components and their licences. *Golden Axe*, *Holosseum*, *Super Visual Football*,
-*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap*, *F1 Exhaust Note* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Jurassic Park* is a trademark of Universal City Studios and Amblin Entertainment; *J.League* is a trademark of the Japan Professional Football League; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
+*Super Visual Soccer*, *Arabian Fight*, *Burning Rival*, *Dark Edge*, *SegaSonic The Hedgehog*, *Sonic the Hedgehog*, *Rad Mobile*, *Rad Rally*, *F1 Super Lap*, *F1 Exhaust Note*, *Air Rescue* and *System 32* are trademarks of SEGA; *F1* is a trademark of Formula One Licensing B.V.; *Dragon Ball Z* is a trademark of Bird Studio/Shueisha and Toei Animation; *Jurassic Park* is a trademark of Universal City Studios and Amblin Entertainment; *J.League* is a trademark of the Japan Professional Football League; *Spider-Man* is a trademark of Marvel; *Slip Stream* is a trademark of Capcom; *Alien 3* is a trademark of 20th Century Studios. This is an
 unaffiliated hardware-preservation project. It contains no ROM data, artwork,
 manuals or schematic scans. Use it only with ROMs you are legally entitled to.

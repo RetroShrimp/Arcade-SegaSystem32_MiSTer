@@ -107,6 +107,16 @@ module s32_sys (
     // ---- F1 Exhaust Note's bridge board, main seat with no partner (board
     // descriptor byte 3 bit 1). See s32_v60bus's "bridge board".
     input  logic        brg_board,
+    // ---- Air Rescue (board descriptor byte 3 bit 2): the partner seat's
+    // boot handshake on the bridge board (brg_hs) and the 837-8341 DSP
+    // board at $A00000 (dsp_board), whose program arrives through dsp_ld_*
+    // during reset. See s32_v60bus's "bridge board" and "DSP board". The
+    // DSP board takes the V25's place, so the V25 is held in reset.
+    input  logic        brg_hs,
+    input  logic        dsp_board,
+    input  logic        dsp_ld_we,
+    input  logic [13:0] dsp_ld_addr,
+    input  logic [7:0]  dsp_ld_data,
     // ---- Rad Mobile's 837-7536 A/D board (board descriptor byte 2 bit 0):
     // one MSM6253 at $C00050 (s32_msm6253). adc_ain[8n +: 8] is channel n's
     // conversion result (unsigned).
@@ -500,7 +510,9 @@ module s32_sys (
         .adc_offset(adc_offset), .adc_rdata(adc_rdata),
         .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
         .prot_dbz(prot_dbz), .prot_jleague(prot_jleague),
-        .brg_board(brg_board)
+        .brg_board(brg_board), .brg_hs(brg_hs), .dsp_board(dsp_board),
+        .dsp_ld_we(dsp_ld_we), .dsp_ld_addr(dsp_ld_addr),
+        .dsp_ld_data(dsp_ld_data)
         , .vid_hold(vram_cpu_hold)
     );
 
@@ -646,7 +658,9 @@ module s32_sys (
     end
 
     s32_v25 u_v25 (
-        .clk(clk), .rst(rst), .cen(v25_cen), .hold(mrom_hold),
+        // Air Rescue has the DSP board where the V25 would be, and its
+        // program in the V25's ROM slot: the V25 stays in reset
+        .clk(clk), .rst(rst || dsp_board), .cen(v25_cen), .hold(mrom_hold),
         .dec_arf(prot_arf),
         .rom_addr(mrom_addr), .rom_data(mrom_data), .rom_rd(mrom_rd),
         .dp_sel(mcu_dp_sel), .dp_we(mcu_dp_we), .dp_addr(mcu_dp_addr),

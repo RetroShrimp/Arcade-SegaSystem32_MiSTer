@@ -27,6 +27,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_upd4701.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_msm6253.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_gun_aim.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_jpdrive.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_dspbd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_dsp7725.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_v25.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/mb8421.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/eeprom_93c46.sv

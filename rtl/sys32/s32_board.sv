@@ -95,6 +95,10 @@ module s32_board (
     input  logic        prot_jleague,
     // F1 Exhaust Note's bridge board (descriptor byte 3 bit 1): s32_v60bus
     input  logic        brg_board,
+    // Air Rescue's partner handshake and DSP board (descriptor byte 3 bit
+    // 2): s32_v60bus. The DSP program is snooped from the load stream below.
+    input  logic        brg_hs,
+    input  logic        dsp_board,
     // Rad Mobile's A/D board (descriptor byte 2 bit 0): s32_sys / s32_msm6253
     input  logic        adc_board,
     input  logic [31:0] adc_ain,
@@ -164,6 +168,7 @@ module s32_board (
     logic [15:0] vram_wr_data;  logic [1:0]  vram_wr_dqm;
     logic        vram_wr_done;
 
+    logic dsp_ld_we;              // Air Rescue's DSP program ("ROM load")
     s32_sys u_sys (
         .clk(clk), .rst(rst_core), .cen_ren(cen_ren),
         .cen_spr(cen_spr),
@@ -189,7 +194,9 @@ module s32_board (
         .trk_board(trk_board), .trk_stb(trk_stb), .trk_dx(trk_dx),
         .trk_dy(trk_dy), .prot_sonic(prot_sonic), .prot_f1lap(prot_f1lap),
         .prot_dbz(prot_dbz), .prot_jleague(prot_jleague),
-        .brg_board(brg_board),
+        .brg_board(brg_board), .brg_hs(brg_hs), .dsp_board(dsp_board),
+        .dsp_ld_we(dsp_ld_we), .dsp_ld_addr(ld_addr[13:0]),
+        .dsp_ld_data(ld_data),
         .adc_board(adc_board), .adc_ain(adc_ain), .jp_drive(jp_drive),
         .de(de), .rgb(rgb), .hblank(hblank), .vblank(vblank),
         .hs(hs), .vs(vs), .ce_pix(ce_pix), .vid_wide(vid_wide),
@@ -660,6 +667,11 @@ module s32_board (
         end
     end
     assign ld_rdy = sdr_ready && !ld_flush;
+    // Air Rescue's DSP program (d7725.01, 10KB) is the start of the V25's
+    // slot, SDRAM $1C00000: every byte the line buffer takes there is also
+    // written into the DSP's own RAMs (s32_dspbd), which the DSP runs from
+    assign dsp_ld_we = !rst_ctrl && ld_wr && !ld_flush
+                    && ld_addr[24:14] == 11'h700 && ld_addr[13:0] < 14'h2800;
 
     // wb port mux
     assign wbreq  = rst_core && ld_flush;

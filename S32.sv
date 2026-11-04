@@ -110,6 +110,7 @@ wire   [1:0] buttons;
 wire [127:0] status;
 wire  [31:0] joystick_0, joystick_1, joystick_2, joystick_3;
 wire  [15:0] stick_0, stick_1, stick_2;   // left analog: [7:0] X, [15:8] Y
+wire  [15:0] rstick_0;                    // pad 1 right analog (Air Rescue)
 wire  [24:0] ps2_mouse;                   // [24] toggles per packet
 assign crt_enable = status[35] & ~forced_scandoubler;
 
@@ -154,6 +155,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_l_analog_0(stick_0),
 	.joystick_l_analog_1(stick_1),
 	.joystick_l_analog_2(stick_2),
+	.joystick_r_analog_0(rstick_0),
 	.ps2_mouse(ps2_mouse)
 );
 
@@ -450,6 +452,17 @@ assign ioctl_din = (ioctl_addr >= 27'd128) ? zram_nv_rdata
 //          momentary buttons, on P1_A bits 0/1; every other P1_A bit,
 //          COIN2 and START2 unused (MAME INPUT_PORTS_START(f1en), the
 //          mainpcb half; docs/f1en-bringup.md)
+//   byte 2 bit 2  Air Rescue's seat, with byte 1 bit 0: the main seat of
+//          its two-board cabinet with no partner. The bridge board as
+//          F1 Exhaust Note's plus the partner's half of the boot handshake,
+//          and the 837-8341 DSP board at $A00000, a uPD77P25 running
+//          d7725.01 from the V25's ROM slot (s32_v60bus "bridge board",
+//          "DSP board"; MAME sega_system32_dual_direct_upd7725,
+//          init_arescue). The harness: Button 1 / Button 2 on P1_A bits
+//          0/1, START1/START2 unused; the flight stick X (reversed) / Y and
+//          the collective on A/D channels 0-2 (MAME
+//          INPUT_PORTS_START(arescue), the mainpcb half;
+//          docs/arescue-bringup.md)
 //
 // These describe how the game's board and cabinet are built, not operator
 // settings, so they live in the .mra rather than the OSD.
@@ -524,10 +537,18 @@ wire jp_cab = adc_board & board_cfg2[7];
 // bit 0, Gear Down (button 4) on bit 1, momentary; bits 2-7 unused (MAME
 // INPUT_PORTS_START(f1en)). The bridge board is in s32_v60bus.
 wire f1en_seat = adc_board & board_cfg3[1];
+// Air Rescue's seat (board_cfg3[2]): the bridge board as F1 Exhaust Note's,
+// plus the 837-8341 DSP board and the partner's boot handshake (s32_v60bus).
+// Its harness: Button 1 and Button 2 on P1_A bits 0/1, bits 2-7 unused,
+// START1/START2 unused, Button 1 starts the game (MAME
+// INPUT_PORTS_START(arescue), the mainpcb half); the flight stick and the
+// collective are on the A/D board (below).
+wire ar_seat = adc_board & board_cfg3[2];
 wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
                  : jp_cab ? ~{7'd0, joystick_0[4]}
                  : gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
                  : f1en_seat ? ~{6'd0, joystick_0[11], joystick_0[6]}
+                 : ar_seat ? ~{6'd0, joystick_0[5], joystick_0[4]}
                  : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],
                                     joystick_0[6]}
                  : (adc_board & gear_harness) ? ~{7'd0, gear_lever}
@@ -599,7 +620,7 @@ wire [7:0] in_service12 = gun_harness ? ~{
 	trk_board & joystick_2[7],                    // START3 (trackball board)
 	trk_board & joystick_2[8],                    // COIN3  (trackball board)
 	joystick_1[7] & (~adc_board | stick_harness | jp_cab), // START2
-	joystick_0[7],                                // START1
+	joystick_0[7] & ~ar_seat,                     // START1
 	us_cab ? joystick_2[8] : (joystick_1[8] & ~f1en_seat), // COIN2 (World) / COIN3 (US)
 	us_cab ? joystick_3[8] : joystick_0[8],       // COIN1 (World) / COIN4 (US)
 	test_btn,                                     // TEST
@@ -719,8 +740,33 @@ s32_gun_aim gun_aim
 	.mouse_ev(mouse_ev), .mouse_dx(mouse_dx), .mouse_dy(mouse_dy),
 	.ain(gun_ain)
 );
+// Air Rescue (ar_seat): ch0 the flight stick's X, reversed (MAME ANALOG1,
+// AD_STICK_X with PORT_REVERSE: full right reads $00), ch1 its Y (ANALOG2,
+// full down reads $FF), ch2 the collective (ANALOG3, AD_STICK_Z); all centre
+// $80, ch3 not connected. The stick is pad 1's left stick. The collective is
+// a lever that stays where it is put: pad 1's right stick Y sets it while
+// deflected (up = higher), and buttons 3 / 4 move it up / down 3 counts per
+// 2^18 clk_sys (~0.17 s end to end) otherwise. The rates and which way is
+// up are usability settings, not hardware (docs/arescue-bringup.md §5).
+wire [7:0] ar_cy = stick_dz(rstick_0[15:8]);
+reg  [7:0] ar_coll = 8'h80;
+always @(posedge clk_sys) begin
+	if (rst_core)
+		ar_coll <= 8'h80;
+	else if (ar_cy != 8'd0)
+		ar_coll <= ar_cy ^ 8'h7F;                  // -Y (up) = higher
+	else if (adc_tick) begin
+		if (joystick_0[6] & ~joystick_0[11])
+			ar_coll <= (ar_coll > 8'hFC) ? 8'hFF : ar_coll + 8'd3;
+		else if (joystick_0[11] & ~joystick_0[6])
+			ar_coll <= (ar_coll < 8'h03) ? 8'h00 : ar_coll - 8'd3;
+	end
+end
+wire [7:0] ar_x = ~(stick_0[7:0] ^ 8'h80);        // reversed
+wire [7:0] ar_y = stick_0[15:8] ^ 8'h80;
 wire [31:0] adc_ain = (gun_harness | jp_cab) ? gun_ain
                    : stick_harness ? 32'hFFFFFFFF       // nothing connected
+                   : ar_seat ? {8'hFF, ar_coll, ar_y, ar_x}
                                   : {8'hFF, adc_brake, adc_accel, adc_wheel};
 
 //////////////////////   THE MACHINE   ///////////////////////////
@@ -760,7 +806,9 @@ s32_board board
 	.prot_f1lap(board_cfg2[4]),
 	.prot_dbz(board_cfg2[6]),
 	.prot_jleague(board_cfg3[0]),
-	.brg_board(f1en_seat),
+	.brg_board(f1en_seat | ar_seat),
+	.brg_hs(ar_seat),
+	.dsp_board(ar_seat),
 	.jp_drive(jp_cab),
 	.adc_board(adc_board),
 	.adc_ain(adc_ain),
