@@ -379,6 +379,7 @@ module v60 (
     logic [3:0]  md_fo;
 
     logic [31:0] md_rem;
+    logic        md_zdiv;     // divisor was zero: Integer Zero Divide (#21)
     // rem/remu (exec 56/57, opcodes 50-55) ride the div/divu iteration
     // with mode_rem selecting the remainder output (the coin/start
     // path's credit formatter at 064874 is Golden Axe's first rem.b)
@@ -418,7 +419,8 @@ module v60 (
         .mode_rem(exec_q == 8'd56 || exec_q == 8'd57),
         .mode_mlx(is_mlx_op),
         .busy(md_busy), .done(),
-        .result(md_res), .rem_out(md_rem), .flags_out(md_fo)
+        .result(md_res), .rem_out(md_rem), .flags_out(md_fo),
+        .zdiv(md_zdiv)
     );
 
     // ------------------------------------------------------------- helpers
@@ -654,6 +656,7 @@ module v60 (
     // NMI edge detect + pend/busy
     logic nmi_q, nmi_pend, nmi_busy;
     logic xcp_nmi;                    // this entry is the NMI
+    logic xcp_zdv;                    // this entry is Integer Zero Divide
 
     // exception dispatch working registers
     logic [31:0] xcp_oldpsw, xcp_vecaddr, xcp_tgt;
@@ -1031,6 +1034,7 @@ module v60 (
             nmi_pend <= 1'b0;
             nmi_busy <= 1'b0;
             xcp_nmi <= 1'b0;
+            xcp_zdv <= 1'b0;
             xcp_parm <= 1'b0;
         end else if (wait_hold) begin
             // bus wait: everything stays exactly as-is (the one-shot
@@ -1080,9 +1084,12 @@ module v60 (
                     // 0x40 + n during IACK (MAME update_irq_state), so
                     // the table slot is 64 + n, not n. The NMI uses the
                     // FIXED architectural slot 2 (MAME v60_do_irq(2)).
+                    // Integer Zero Divide uses SBT slot 21 (+84, Fig. 8-2).
                     xcp_vecaddr <= (preg_rdata & ~32'hFFF)
-                                 + (xcp_nmi ? 32'd8
+                                 + (xcp_zdv ? 32'd84
+                                    : xcp_nmi ? 32'd8
                                     : ((32'd64 + {29'd0, xcp_vecq}) << 2));
+                    xcp_zdv <= 1'b0;
                     state <= S_XCP_VEC;
                 end
 
@@ -1346,12 +1353,18 @@ module v60 (
                                 // table (unlike Bcc, where 0xB is unused)
                                 if (op1_val[7:4] != 4'hB &&
                                     cond(op1_val[7:4], psw[3:0])) begin
-                                    // exception entry (NEC manual; matches
-                                    // MAME update_psw_for_exception): EL=0,
-                                    // clear EM,TP,IE,AE,TE; IS unchanged
+                                    // exception entry (NEC manual p.8-3):
+                                    // EL=0, clear EM,TP,AE,TE; IE and IS
+                                    // UNCHANGED — "exception: PSW.IE
+                                    // unchanged", and software traps are an
+                                    // exception class (p.8-4). MAME's
+                                    // update_psw_for_exception also clears
+                                    // IE; the manual is followed, as for
+                                    // CHLVL and Zero Divide
+                                    // (docs/OPEN-QUESTIONS.md Q52, 2026-11-04)
                                     xcp_oldpsw <= psw;
                                     psw_wen <= 1'b1;
-                                    psw_wdata <= (psw & ~32'h2B07_0000)
+                                    psw_wdata <= (psw & ~32'h2B03_0000)
                                                | 32'h8000_0000;   // PSW.ASA
                                     xcp_vecaddr <= (preg_rdata & ~32'hFFF)
                                         + ((32'd48 + {28'd0, op1_val[3:0]}) << 2);
@@ -1500,7 +1513,34 @@ module v60 (
                     // !md_start covers the one cycle before busy rises; the
                     // result and flags stay registered in u_md until the
                     // next start.
-                    if (!md_busy && !md_start) begin
+                    if (!md_busy && !md_start && md_zdiv) begin
+                        // Integer Zero Divide, exception #21 (NEC manual
+                        // p.8-8, frame p.8-17, code 1500h Table 8-1). The
+                        // unit has set OV and left the destination alone, so
+                        // nothing is written back. Entry as every exception
+                        // (p.8-3): EL=0; EM, TP, AE, TE cleared; ASA set; IE
+                        // and IS UNCHANGED (Note 4: a handler entered on the
+                        // interrupt stack stays on it) — the same rule as
+                        // CHLVL (Q52). Frame from the top: current PC
+                        // (parameter), code|8, PSW (with the new OV), next PC
+                        // ("Abort/Continue"). MAME takes no trap at all
+                        // (docs/OPEN-QUESTIONS.md Q3).
+                        xcp_oldpsw <= {psw[31:4], md_fo};
+                        psw_wen <= 1'b1;
+                        psw_wdata <= ({psw[31:4], md_fo} & ~32'h2B03_0000)
+                                   | 32'h8000_0000;          // PSW.ASA
+                        xcp_code <= {16'h1500, 16'd8};
+                        xcp_parm <= 1'b1;
+                        xcp_parw <= pc;
+                        xcp_irq <= 1'b0;
+                        xcp_nmi <= 1'b0;
+                        xcp_zdv <= 1'b1;
+                        state <= S_XCP_SBR;
+`ifndef SYNTHESIS
+                        $display("V60 ZERO DIVIDE pc=%06x op=%0d t=%0t",
+                                 pc[23:0], exec_q, $time);
+`endif
+                    end else if (!md_busy && !md_start) begin
                         flags_wen <= 1'b1; flags_wdata <= md_fo;
                         if (is_pair_op) begin
                             if (op2_isreg) begin

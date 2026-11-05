@@ -1,8 +1,12 @@
 // s32_pcm.sv — RF5C68/RF5C105 PCM (8 channels, 64KB wave RAM).
 //
-// References: MAME rf5c68.cpp (register map, sample loop). The board
-// carries an RF5C105, modelled as an RF5C68 (no differences are
-// documented).
+// References: MAME rf5c68.cpp (register map, sample loop); Ricoh's
+// RF5C68A data sheet (1993 data book pp.3-53..3-70); Sega's MEGA-CD
+// Hardware Manual "PCM Sound Source (RF5C164)", ver 1.0 1991-10-14, whose
+// connection figures are labelled "5C105" (p.11). The board's part is the
+// SEGA 315-5476 at IC20 (schematic: RF5C105), which MAME's rf5c68.cpp also
+// names as the RF5C164 ("or Sega 315-5476A"). Register map, sample loop
+// and limiter are common to all three sheets.
 //
 // CPU window (Z80 C000-DFFF via s32_sound's pcm port, 13-bit offset):
 //   A12 = 0: registers (write-only; reads return FF)
@@ -17,8 +21,15 @@
 // Samples are sign-magnitude bytes (bit 7 = positive); 0xFF is the
 // loop marker (jump to loopst << 11; a second 0xFF kills the channel
 // for the batch). Per tick each channel adds (sample * pan_nibble *
-// env) >> 5 into a signed accumulator; RF5C68 output is 10 bits
-// (low 6 bits masked) with +/-32768 clamp.
+// env) >> 5 into a signed accumulator, clamped once to 16 bits. The
+// output keeps all 16 bits (docs/OPEN-QUESTIONS.md Q7, 2026-11-04): the
+// RF5C164/5C105 sheet sums the eight channels into a 16-bit total that goes
+// through the limiter to its serial DAC interface, and its feature list
+// says it connects "directly" to "the digital-audio 16-bit D/A converter
+// (Sanyo LC7881)", the DAC on sheet 8. MAME's segas32 instantiates the
+// RF5C68 instead, whose 10-bit output (`& ~0x3F`) this core used to copy;
+// the RF5C68A's own outputs (10-bit delta-coded serial, 8-bit parallel)
+// cannot drive an LC7881.
 //
 // Sample tick = clock / 384 (12.5 MHz -> ~32.55 kHz), generated here
 // from cen_pcm (12.5 MHz enable). The 8 channels are processed
@@ -302,9 +313,9 @@ module s32_pcm (
                 end
 
                 P_DONE: begin
-                    // RF5C68: 10-bit output (mask low 6 bits), clamp
-                    smp_cur_l <= clamp10(acc_l);
-                    smp_cur_r <= clamp10(acc_r);
+                    // RF5C164/5C105: full 16-bit output, one clamp
+                    smp_cur_l <= clamp16(acc_l);
+                    smp_cur_r <= clamp16(acc_r);
                     pst <= P_IDLE;
                 end
 
@@ -315,7 +326,7 @@ module s32_pcm (
 
     // ======================================================== output
     // The engine produces one sample per tick (32.552 kHz) and holds it
-    // until the next tick, as the RF5C68 presents it. The board's LC7881 DAC
+    // until the next tick, as the chip presents it. The board's LC7881 DAC
     // and op-amp filter (schematic sheets 8 and 9) are not modelled.
     logic signed [15:0] smp_cur_l, smp_cur_r;
     always_comb begin
@@ -323,16 +334,15 @@ module s32_pcm (
         out_r = smp_cur_r;
     end
 
-    // MAME order: mask low 6 bits of the full-precision mix FIRST,
-    // then clamp (an over-range mix therefore lands on 32767, not on
-    // a 64-aligned value)
-    function automatic logic signed [15:0] clamp10
+    // The limiter: the full-precision sum of all eight channels, clamped
+    // once (sheet: "sets the accumulated results to FFFFH" / "0000H" on
+    // overflow, offset binary; signed here). Full precision then one clamp
+    // is App 4.13.1's shape (sim/s32_pcm phase 6).
+    function automatic logic signed [15:0] clamp16
         (input logic signed [21:0] v);
-        logic signed [21:0] m;
-        m = v & ~22'sd63;
-        if (m > 22'sd32767)       clamp10 = 16'sd32767;
-        else if (m < -22'sd32768) clamp10 = 16'sh8000;   // -32768
-        else                      clamp10 = m[15:0];
+        if (v > 22'sd32767)       clamp16 = 16'sd32767;
+        else if (v < -22'sd32768) clamp16 = 16'sh8000;   // -32768
+        else                      clamp16 = v[15:0];
     endfunction
 
 endmodule

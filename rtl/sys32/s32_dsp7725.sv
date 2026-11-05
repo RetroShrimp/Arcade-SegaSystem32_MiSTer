@@ -7,19 +7,29 @@
 //     (necdsp_device, by byuu and R. Belmont): execute_run (one opcode per
 //     clock, the interrupt's NOP + LCALL $100 pair, the multiplier after every
 //     instruction), exec_op / exec_rt / exec_jp / exec_ld, data_r / data_w (the
-//     host data port's 16-bit DRS sequence), execute_set_input (INT: rising
-//     edge, taken only with SR.EI set, which it clears), device_reset (what
-//     /RESET clears: PC, SR, the flags, SI/SO acks, a pending interrupt).
+//     host data port's 16-bit DRS sequence), execute_set_input (INT taken
+//     only with SR.EI set, which it clears), device_reset (what /RESET
+//     clears: PC, SR, the flags, SI/SO acks, a pending interrupt).
 //     tools/upd7725_model.py is an instruction-for-instruction Python port of
-//     it, and the bench (sim/s32_dsp7725) compares this RTL with that port.
-//   NEC uPD77C25/77P25 data sheet: 122 ns instruction cycle at 8.192 MHz, so
-//     one instruction per input clock; 2048 x 24 program ROM, 1024 x 16 data
-//     ROM, 256 x 16 data RAM; 4-level stack.
+//     it (chip=True for the differences below), and the bench
+//     (sim/s32_dsp7725) compares this RTL with that port.
+//   NEC uPD77C25/77P25 data sheet (NEC 1989 DSP and Speech Products Data
+//     Book, pp. 2-25..2-38): 122 ns instruction cycle at 8.192 MHz, so one
+//     instruction per input clock; 2048 x 24 program ROM, 1024 x 16 data
+//     ROM, 256 x 16 data RAM; 4-level stack; INT is level-sensitive (2-29),
+//     minimum pulse 3 clocks (2-37); instruction order and the move/ALU
+//     conflict (2-31); Table 6, every ALU operation's flag effects, which
+//     MAME matches (SA1/SB1 "indefinite" after the logic ops and shifts).
 //
 // Where this core follows the chip rather than MAME's shared 7725/96050 core
 // (none of these is reachable from the Air Rescue program, docs/
 // arescue-bringup.md §3): PC 11 bits, DP 8 bits, RP 10 bits, a 4-level
-// circular stack (MAME: 16-bit registers and 16 levels). The serial ports are
+// circular stack (MAME: 16-bit registers and 16 levels); INT a level, not a
+// rising edge (the board's one-clock pulse makes the two the same); and an
+// OP whose move writes the accumulator its ALU field selects does no ALU
+// operation, so that accumulator's flags hold ("the data move supersedes
+// the ALU operation"; MAME updates the flags, then the move overwrites the
+// result; no word of d7725.01 does this). The serial ports are
 // not wired on the 837-8341 as far as is known: SI reads 0 and SO goes
 // nowhere (MAME emulates neither).
 //
@@ -114,7 +124,6 @@ module s32_dsp7725 (
     logic [10:0] stack [0:3];
     logic [1:0]  sp = '0;
     logic        siack, soack;
-    logic        irq_prev = 1'b0;
     logic [1:0]  irq_firing;
     logic [23:0] op;
     logic [10:0] pc_seq;                  // PC after this fetch
@@ -155,11 +164,13 @@ module s32_dsp7725 (
             if (cen) begin
                 logic [15:0] s;
                 s = sr;
-                if (int_in && !irq_prev && s[EI]) begin
+                // INT is a level, taken whenever EI is set (data sheet
+                // p. 2-29; MAME: a rising edge). Taking it clears EI, so a
+                // held INT fires again only after the program sets EI
+                if (int_in && s[EI]) begin
                     irq_firing <= 2'd1;
                     s[EI] = 1'b0;
                 end
-                irq_prev <= int_in;
                 if (host_wr) begin                         // MAME data_w
                     if (!s[DRC]) begin
                         if (!s[DRS]) begin
@@ -252,7 +263,10 @@ module s32_dsp7725 (
                         4'd14: idb = l;
                         default: idb = ram_dp;
                     endcase
-                    if (alu != 4'd0) begin
+                    // a move into the accumulator the ALU selects makes
+                    // the ALU operation a NOP, flags held (data sheet
+                    // p. 2-31; MAME updates the flags)
+                    if (alu != 4'd0 && dst != (asl ? 4'd2 : 4'd1)) begin
                         case (psel)
                             2'd0: p = ram_dp;
                             2'd1: p = idb;

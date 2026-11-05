@@ -6,9 +6,10 @@
 // modelled by s32_lineout: the FM 7.2 kHz pole, the PCM 33 Hz high-pass
 // and 3rd-order ~14 kHz reconstruction low-pass, the shared 36 kHz
 // line-out pole, and PCM's opposite polarity to FM. Passband levels are
-// MAME segas32.cpp's (ym1/ym2 0.30, rf5c68 0.40; 77/256 and 102/256),
-// because the schematic gives topology and component values but not the
-// DACs' volts per code (OPEN-QUESTIONS Q23).
+// FM 111/256 per chip and PCM 48/256: the schematic gives topology and
+// component values but not the DACs' volts per code, so the FM:PCM
+// balance was measured from the owner's PCB recording (PCM:FM 0.35x
+// MAME segas32.cpp's ym 0.30 / rf5c68 0.40; OPEN-QUESTIONS Q23).
 //
 // `define S32_AUDIO_RAW restores the unfiltered mix,
 // (fm1*77 + fm2*77 + pcm*102) >>> 8 saturated, bit-exact with the core

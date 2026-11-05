@@ -353,6 +353,7 @@ module s32_sys (
     logic        ic_sel, ic_we;
     logic [3:0]  ic_addr;
     logic [7:0]  ic_wdata, ic_rdata;
+    logic        ic_more;
 
     // V60 clock: cen16 = clk/4 = the real 16.10795 MHz CPU clock (the
     // 32.2159 MHz crystal / 2). The core steps only on cen16. The bus unit
@@ -500,7 +501,7 @@ module s32_sys (
         .ppi_sel(ppi_sel), .ppi_we(ppi_we), .ppi_offset(ppi_offset),
         .ppi_wdata(ppi_wdata), .ppi_rdata(ppi_rdata),
         .ic_sel(ic_sel), .ic_we(ic_we), .ic_addr(ic_addr),
-        .ic_wdata(ic_wdata), .ic_rdata(ic_rdata),
+        .ic_wdata(ic_wdata), .ic_more(ic_more), .ic_rdata(ic_rdata),
         .prot_brival(prot_brival),
         .prot_darkedge(prot_darkedge), .fd_vbl(ev_vbin),
         .bcu_pend(bcu_pend),
@@ -536,7 +537,7 @@ module s32_sys (
     s32_intctl u_ic (
         .clk(clk), .rst(rst),
         .sel(ic_sel), .we(ic_we), .addr(ic_addr),
-        .wdata(ic_wdata), .rdata(ic_rdata),
+        .wdata(ic_wdata), .wmore(ic_more), .rdata(ic_rdata),
         .ev_vblank_in(ev_vbin), .ev_vblank_out(ev_vbout),
         .ev_z80_comm(v60_irq_pulse),
         .cen_timer_a(cen_ta), .cen_timer_b(cen_tb),

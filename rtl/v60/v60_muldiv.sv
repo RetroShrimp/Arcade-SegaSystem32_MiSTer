@@ -8,11 +8,23 @@
 //          CY preserved; S/Z from result
 //   mulu : as mul but unsigned product
 //   div  : signed truncating quotient; OV only for <min>/-1 (dst unchanged);
-//          divisor 0 leaves dst unchanged (the real CPU raises a Zero
-//          Divide exception; that would be the sequencer's job);
 //          CY preserved; S/Z from dst afterwards
-//   divu : unsigned quotient; OV = 0; divisor 0 leaves dst unchanged;
-//          CY preserved; S/Z from dst afterwards
+//   divu : unsigned quotient; OV = 0; CY preserved; S/Z from dst afterwards
+//   divisor 0 (div/divu/rem/remu/divx/divux): dst unchanged, OV SET, and
+//          `zdiv` is raised with `done` so the sequencer takes the Integer
+//          Zero Divide exception (#21). NEC manual p.8-8: "A zero divide
+//          exception sets the PSW.OV flag and leaves the destination
+//          unmodified". MAME's opDIV*/opREM* leave OV clear and take no
+//          trap; its opDIVX/opDIVUX hand a zero divisor to the host divide
+//          (x86 #DE) — docs/OPEN-QUESTIONS.md Q3/Q9
+//   divx / divux (mode_dvx): 64/32 -> 32-bit quotient (low) + remainder
+//          (high). NEC manual p.7-39/40: OV SET on integer overflow (the
+//          quotient does not fit 32 bits: signed range for divx, unsigned
+//          for divux) and the destination pair is then UNCHANGED; otherwise
+//          OV CLEARED. CY unchanged, S/Z from the quotient (the unchanged low
+//          word on overflow, as the narrow forms take S/Z from the unchanged
+//          dst). MAME's opDIVX/opDIVUX leave OV untouched and store the
+//          truncated quotient — Q9
 //   mulx / mulux (mode_mlx, with mul / mulu at word width): the whole
 //          64-bit product, low word on result, high word on rem_out (the
 //          sequencer writes them to Rn / Rn+1 as divux's pair). NEC manual
@@ -46,7 +58,8 @@ module v60_muldiv (
     output logic        done,      // 1-cycle pulse, outputs valid
     output logic [31:0] result,
     output logic [31:0] rem_out,   // divux remainder
-    output logic [3:0]  flags_out
+    output logic [3:0]  flags_out,
+    output logic        zdiv       // valid with done: divisor was zero
 );
 
     localparam logic [4:0] OP_MUL = 5'd14, OP_MULU = 5'd15,
@@ -60,6 +73,7 @@ module v60_muldiv (
     logic [1:0]  wr;
     logic [3:0]  fin;
     logic        dvx, remr, mlx;
+    logic        ovx;      // divx/divux: |dividend high| >= |divisor|
     logic [31:0] a_in, b_in, ahi_in;
 
     // decode of captured width
@@ -141,10 +155,14 @@ module v60_muldiv (
                     // (same class as the divux quotient-overflow crash)
                     // so 0 here is the mathematical answer (MAME cannot
                     // be compared).
+                    zdiv <= div0;
                     if (div0 || (ov_case && !remr)) begin
-                        // dst unchanged; OV per case; S/Z from unchanged dst
+                        // dst unchanged (both words of a divx/divux pair);
+                        // OV set (zero divide, or <min>/-1); S/Z from the
+                        // unchanged dst
                         result    <= au;
-                        flags_out <= {fin[3], ov_case, au[msb], au == 32'd0};
+                        rem_out   <= ahi_in;
+                        flags_out <= {fin[3], 1'b1, au[msb], au == 32'd0};
                         busy  <= 1'b0;
                         done  <= 1'b1;
                         state <= S_IDLE;
@@ -175,6 +193,12 @@ module v60_muldiv (
                 end
 
                 S_RUN: begin
+                    // divx/divux quotient overflow, first half: on the first
+                    // iteration acc still holds the loaded |dividend|, and
+                    // the quotient needs more than 32 bits exactly when its
+                    // high word is not below |divisor| (registered operands
+                    // only — no compare behind S_INIT's 64-bit negate)
+                    if (cnt == 6'd1) ovx <= dvx && (acc[63:32] >= opb);
                     if (is_div) begin
                         // restoring division, MSB-first. The shifted-out
                         // acc[63] is part of the partial remainder: in
@@ -203,13 +227,24 @@ module v60_muldiv (
                         // this is bit-identical to the previous behaviour.
                         quo  = acc[31:0];
                         remv = acc[63:32];
-                        if (neg_res) quo  = ~quo  + 32'd1;
-                        if (neg_rem) remv = ~remv + 32'd1;
-                        r = quo;
-                        rem_out <= remv;
-                        // S/Z from the quotient; CY/OV preserved (MAME opDIVX
-                        // sets only _S and _Z)
-                        flags_out <= {fin[3], fin[2], r[31], r == 32'd0};
+                        // second half of the overflow test: a 32-bit
+                        // magnitude that is outside the signed range (divx
+                        // only; neg_res is never set for divux)
+                        if (ovx || (is_signed && (neg_res ? (quo > 32'h8000_0000)
+                                                          : quo[31]))) begin
+                            // NEC manual p.7-39/40: OV, destination unchanged
+                            r = au;
+                            rem_out <= ahi_in;
+                            flags_out <= {fin[3], 1'b1, au[31], au == 32'd0};
+                        end else begin
+                            if (neg_res) quo  = ~quo  + 32'd1;
+                            if (neg_rem) remv = ~remv + 32'd1;
+                            r = quo;
+                            rem_out <= remv;
+                            // S/Z from the quotient; OV CLEARED (manual; MAME
+                            // opDIVX/opDIVUX leave OV untouched — Q9)
+                            flags_out <= {fin[3], 1'b0, r[31], r == 32'd0};
+                        end
                     end else if (is_div) begin
                         if (remr) begin
                             // rem/remu: the restoring divide leaves the

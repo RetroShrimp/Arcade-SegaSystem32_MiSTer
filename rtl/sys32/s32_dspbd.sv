@@ -26,7 +26,13 @@
 // The board logic below is this project's reading of those two programs; the
 // board itself is untraced (Q64):
 //   - a V60 write to $A00000 latches the command, raises the DSP's INT for
-//     one DSP clock and sets BUSY; $A00002 latches the parameter
+//     three DSP clocks and sets BUSY; $A00002 latches the parameter. Three
+//     is the chip's minimum INT pulse (uPD77C25/77P25 data sheet, t_INT =
+//     3 t_CYC, NEC 1989 DSP and Speech Products Data Book p. 2-37), so a
+//     real board holds INT at least this long; how much longer is unknown.
+//     The DSP takes a high INT level only with SR.EI set and clears EI as it
+//     does, so a longer pulse would matter only to an EI set while it is
+//     still high; d7725.01 sets EI nowhere that close to a command
 //   - reads: $A00000 / $A00002 return the DSP's two output latches,
 //     $A00004 / $A00006 return BUSY in bit 0 and 0 above it
 //   - the DSP's DMA request moves one DR byte per transfer, low byte first
@@ -92,7 +98,8 @@ module s32_dspbd #(
     // ------------------------------------------------------- latches
     logic [15:0] lat [0:3];               // 0/1 V60 -> DSP, 2/3 DSP -> V60
     logic        busy;
-    logic        int_req;
+    logic [1:0]  int_cnt;               // DSP clocks of INT left
+    wire         int_req = (int_cnt != 2'd0);
     logic [2:0]  xfer;
     logic        dsp_p0, dsp_p1, dsp_drq;
     logic        host_rd, host_wr;
@@ -114,12 +121,12 @@ module s32_dspbd #(
     always_ff @(posedge clk) begin
         if (rst) begin
             busy    <= 1'b1;
-            int_req <= 1'b0;
+            int_cnt <= 2'd0;
             xfer    <= 3'd0;
         end else begin
             // DSP side, one DSP clock at a time
             if (cen) begin
-                int_req <= 1'b0;
+                if (int_cnt != 2'd0) int_cnt <= int_cnt - 2'd1;
                 if (dsp_drq) begin
                     if (xfer == 3'd0)
                         xfer <= 3'(BYTE_CLKS);
@@ -148,7 +155,7 @@ module s32_dspbd #(
                 end
                 if (woff == 2'd0) begin
                     busy    <= 1'b1;
-                    int_req <= 1'b1;
+                    int_cnt <= 2'd3;
                 end
             end
         end

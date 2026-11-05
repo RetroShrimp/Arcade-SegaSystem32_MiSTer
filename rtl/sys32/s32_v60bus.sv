@@ -165,6 +165,8 @@ module s32_v60bus (
     output logic        ic_we,
     output logic [3:0]  ic_addr,
     output logic [7:0]  ic_wdata,
+    output logic        ic_more,     // another byte of this access follows
+                                     // (s32_intctl: one 16-bit load)
     input  logic [7:0]  ic_rdata,
 
     // ---- Burning Rival's FD1149 protection module (from the .mra's board
@@ -250,6 +252,7 @@ module s32_v60bus (
                       wram_qa_l[1], wram_qa_l[0]};
     assign wram_qb = {wram_qb_l[3], wram_qb_l[2],
                       wram_qb_l[1], wram_qb_l[0]};
+
 
     // ------------------------------------------------ sprite list RAM
     // a 16-bit "port" so the serializer treats it like the video and
@@ -725,6 +728,7 @@ module s32_v60bus (
         endcase
     end
 
+
     // --------------------------------------------- serialized targets
     logic       word_port;           // 16-bit-lane target
     assign word_port = (q_reg == R_VID) || (q_reg == R_SPRCTL) ||
@@ -843,6 +847,8 @@ module s32_v60bus (
                             // (2'b11 for word/RMW-merged writes)
     logic        o_we;      // effective we (RMW pass 1 reads: 0)
     logic        o_stb;     // 1 exactly during A_SUB
+    logic        o_more;    // another byte lane of this access follows
+                            // (the 315-5385 sees one bus cycle; Q10)
 
     // current serialized read byte/word
     logic [7:0]  sub_rd8;
@@ -881,7 +887,7 @@ module s32_v60bus (
         adc_sel = 1'b0; adc_we = 1'b0;
         adc_offset = o_addr[2:1];
         ic_sel = 1'b0; ic_we = 1'b0;
-        ic_addr = o_addr[3:0]; ic_wdata = o_wbyte;
+        ic_addr = o_addr[3:0]; ic_wdata = o_wbyte; ic_more = o_more;
         vid_sel = 1'b0; vid_we = 1'b0;
         // 6xxxxx palette/mixer mirrors fold to the base 128KB window:
         // s32_video decodes [23:16] == 60/61, so [19:17] is cleared here
@@ -1230,6 +1236,7 @@ module s32_v60bus (
                                ? (sub_a[0] ? 2'b10 : 2'b01)
                                : 2'b11;
                     o_we    <= q_we && !rmw_rd;
+                    o_more  <= ({1'b0, lane} + 4'd1 < {1'b0, q_size});
                     o_stb   <= 1'b1;
                     ast     <= A_SUB;
                 end
@@ -1281,5 +1288,6 @@ module s32_v60bus (
             endcase
         end
     end
+
 
 endmodule

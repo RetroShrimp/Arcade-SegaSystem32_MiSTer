@@ -113,6 +113,13 @@ module s32_mixer (
 
     // -------------------------------------------- per-layer static config
     // laynum: 0 text, 1-4 NBG0-3, 7 background
+    // Select polarity (docs/OPEN-QUESTIONS.md Q38, SETTLED 2026-11-04):
+    // select bit 1 = set A ($40-44), 0 = set B ($46-4A), as MAME's
+    // compute_color_offsets `!layerflag`. s32tech's "0= A, 1= B" is
+    // inverted: ga2 fades with set A only (B stays 0) and every select bit
+    // set, and the owner's real-PCB intro capture shows that fade with the
+    // same curve as MAME (10-90 % in 36 vs 38 frames); Dragon Ball Z fades
+    // with set B and its graphics layers' bits clear (text set, exempt).
     function automatic logic [1:0] coloroffs (input logic [3:0] laybit,
                                               input logic layerflag);
         logic [1:0] mode;
@@ -366,7 +373,13 @@ module s32_mixer (
     assign first_f  = firstv < 4'd8;
     assign second_f = secondv < 4'd8;
 
-    // palette index per candidate
+    // palette index per candidate. mm ($6100xx[9:8]) = MAME's compacting
+    // shift ((pix >> mm) & ~$F) + pen. That drops exactly the pen bits
+    // s32tech's 8bpp bitmap test saw stop mattering (%11101111 /
+    // %11001111 / %10001111 for mm 1-3, checked exhaustively), so the two
+    // references agree on the observation (codeaudit 3.10, closed
+    // 2026-11-04). Every game sets mm on NBG0-3 (ga2 01, radm 11); none on
+    // the bitmap. Where the surviving bits land is MAME's reading.
     function automatic logic [13:0] palidx (input layctl_t e,
                                             input logic [13:0] p);
         logic [15:0] shifted;

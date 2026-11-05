@@ -22,50 +22,50 @@ it is the first FPGA implementation of that CPU.
 | MRA | MAME set | Status |
 | --- | --- | --- |
 | `Golden Axe - The Revenge of Death Adder.mra` | `ga2` | tested on hardware |
-| `Golden Axe - The Revenge of Death Adder (US).mra` | `ga2u` | not yet tested on hardware |
+| `Golden Axe - The Revenge of Death Adder (US).mra` | `ga2u` | tested on hardware |
 | `Golden Axe - The Revenge of Death Adder (Japan).mra` | `ga2j` | tested on hardware |
 | `Spider-Man - The Videogame.mra` | `spidman` | tested on hardware |
-| `Spider-Man - The Videogame (US).mra` | `spidmanu` | not yet tested on hardware |
-| `Spider-Man - The Videogame (Japan).mra` | `spidmanj` | not yet tested on hardware |
-| `Holosseum.mra` | `holo` | runs in simulation; not yet tested on hardware |
-| `Super Visual Football - European Sega Cup.mra` | `svf` | runs in simulation; not yet tested on hardware |
-| `Super Visual Football - European Sega Cup (Original).mra` | `svfo` | not yet tested on hardware |
-| `Super Visual Soccer - Sega Cup (US).mra` | `svs` | not yet tested on hardware |
+| `Spider-Man - The Videogame (US).mra` | `spidmanu` | tested on hardware |
+| `Spider-Man - The Videogame (Japan).mra` | `spidmanj` | tested on hardware |
+| `Holosseum.mra` | `holo` | tested on hardware |
+| `Super Visual Football - European Sega Cup.mra` | `svf` | tested on hardware |
+| `Super Visual Football - European Sega Cup (Original).mra` | `svfo` | tested on hardware |
+| `Super Visual Soccer - Sega Cup (US).mra` | `svs` | tested on hardware |
 | `Arabian Fight.mra` | `arabfgt` | tested on hardware |
-| `Arabian Fight (US).mra` | `arabfgtu` | not yet tested on hardware |
-| `Arabian Fight (Japan).mra` | `arabfgtj` | not yet tested on hardware |
+| `Arabian Fight (US).mra` | `arabfgtu` | tested on hardware |
+| `Arabian Fight (Japan).mra` | `arabfgtj` | tested on hardware |
 | `Burning Rival.mra` | `brival` | tested on hardware |
-| `Burning Rival (Japan).mra` | `brivalj` | not yet tested on hardware |
+| `Burning Rival (Japan).mra` | `brivalj` | tested on hardware |
 | `Dark Edge.mra` | `darkedge` | tested on hardware |
-| `Dark Edge (Japan).mra` | `darkedgej` | not yet tested on hardware |
+| `Dark Edge (Japan).mra` | `darkedgej` | tested on hardware |
 | `SegaSonic The Hedgehog.mra` | `sonic` | tested on hardware |
-| `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` | runs in simulation; not yet tested on hardware |
+| `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` | tested on hardware |
 | `Rad Mobile.mra` | `radm` | tested on hardware |
-| `Rad Mobile (US).mra` | `radmu` | runs in simulation; not yet tested on hardware |
+| `Rad Mobile (US).mra` | `radmu` | tested on hardware |
 | `Slip Stream.mra` | `slipstrm` | tested on hardware |
-| `Slip Stream (Hispanic).mra` | `slipstrmh` | not yet tested on hardware |
+| `Slip Stream (Hispanic).mra` | `slipstrmh` | tested on hardware |
 | `Alien3 - The Gun.mra` | `alien3` | tested on hardware |
-| `Alien3 - The Gun (US).mra` | `alien3u` | not yet tested on hardware |
-| `Alien3 - The Gun (Japan).mra` | `alien3j` | not yet tested on hardware |
+| `Alien3 - The Gun (US).mra` | `alien3u` | tested on hardware |
+| `Alien3 - The Gun (Japan).mra` | `alien3j` | tested on hardware |
 | `Rad Rally.mra` | `radr` | tested on hardware |
-| `Rad Rally (US).mra` | `radru` | not yet tested on hardware |
-| `Rad Rally (Japan).mra` | `radrj` | not yet tested on hardware |
+| `Rad Rally (US).mra` | `radru` | tested on hardware |
+| `Rad Rally (Japan).mra` | `radrj` | tested on hardware |
 | `F1 Super Lap.mra` | `f1lap` | tested on hardware |
-| `F1 Super Lap (Unprotected).mra` | `f1lapt` | runs in simulation; not yet tested on hardware |
-| `F1 Super Lap (Japan).mra` | `f1lapj` | not yet tested on hardware |
+| `F1 Super Lap (Unprotected).mra` | `f1lapt` | tested on hardware |
+| `F1 Super Lap (Japan).mra` | `f1lapj` | tested on hardware |
 | `Dragon Ball Z - V.R. V.S..mra` | `dbzvrvs` | tested on hardware |
 | `Jurassic Park.mra` | `jpark` | tested on hardware |
-| `Jurassic Park (Japan).mra` | `jparkj` | not yet tested on hardware |
-| `Jurassic Park (Japan, Original).mra` | `jparkja` | not yet tested on hardware |
-| `Jurassic Park (Japan, Conversion).mra` | `jparkjc` | not yet tested on hardware |
+| `Jurassic Park (Japan).mra` | `jparkj` | tested on hardware |
+| `Jurassic Park (Japan, Original).mra` | `jparkja` | tested on hardware |
+| `Jurassic Park (Japan, Conversion).mra` | `jparkjc` | tested on hardware |
 | `The J.League 1994.mra` | `jleague` | tested on hardware |
-| `The J.League 1994 (Original).mra` | `jleagueo` | runs in simulation; not yet tested on hardware |
+| `The J.League 1994 (Original).mra` | `jleagueo` | tested on hardware |
 | `F1 Exhaust Note.mra` | `f1en` | tested on hardware |
-| `F1 Exhaust Note (US).mra` | `f1enu` | not yet tested on hardware |
-| `F1 Exhaust Note (Japan).mra` | `f1enj` | not yet tested on hardware |
+| `F1 Exhaust Note (US).mra` | `f1enu` | tested on hardware |
+| `F1 Exhaust Note (Japan).mra` | `f1enj` | tested on hardware |
 | `Air Rescue.mra` | `arescue` | tested on hardware |
-| `Air Rescue (US).mra` | `arescueu` | not yet tested on hardware |
-| `Air Rescue (Japan).mra` | `arescuej` | not yet tested on hardware |
+| `Air Rescue (US).mra` | `arescueu` | tested on hardware |
+| `Air Rescue (Japan).mra` | `arescuej` | tested on hardware |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -310,6 +310,21 @@ Things you may notice, or may want to know:
   V60's timing comes from its bus and prefetch logic rather than a cycle
   table. MAME charges a flat 8 clocks per instruction, so instruction timing
   can differ slightly from MAME.
+- **CPU edge cases follow NEC's manual, not MAME.** A divide by zero takes
+  the V60's Zero Divide exception, an overflowing extended divide (DIVX,
+  DIVUX) sets the overflow flag and keeps its destination, and a software
+  trap leaves interrupts enabled. MAME does none of these. No game here is
+  known to depend on them.
+- **Interval timers** load and start on every write, a zero count included,
+  as the hardware notes describe (MAME ignores a zero count). Only Air
+  Rescue's power-on writes one.
+- **Not drawn yet: the video mixer's gradation effect.** Burning Rival,
+  Arabian Fight, Dark Edge and Slip Stream switch on a layer-edge
+  smoothing ("gradation") effect in parts of their attract. The hardware
+  notes describe it only in words, MAME ignores it too, and the core
+  leaves those edges sharp rather than guess. The notes also say one
+  mixer bit, which most games set, brightens the picture slightly. That
+  is not applied either, because the amount is not known.
 - **Wait states.** The bus controller's wait-state settings are not
   documented, and the Z80's wait line is not used. Like MAME, the core adds
   no wait states on these paths.
@@ -321,9 +336,14 @@ Things you may notice, or may want to know:
   position, width and polarity have not been measured on a real board.
 - **Sound levels.** The core models the board's stereo line-out filter,
   taken from the schematic: the FM treble roll-off, and the PCM chip's
-  bass cut and reconstruction filter. The balance between FM and PCM is
-  still MAME's, because the schematic does not give the two DACs' output
-  voltages.
+  bass cut and reconstruction filter. The schematic does not give the two
+  DACs' output voltages, so the balance between FM and PCM was measured
+  from a recording of a real board: PCM sits about 9 dB lower against FM
+  than in MAME. A direct line-out recording would confirm the exact value.
+- **PCM resolution.** The PCM chip's output keeps all 16 bits, as Sega's
+  documentation for this chip family describes (it drives the board's
+  16-bit DAC directly). MAME treats it as a 10-bit part, so quiet or
+  fading samples are smoother here than in MAME.
 - **Super Visual Football** reaches its title screen about a second later
   than in MAME. Its power-on delay is a CPU timing loop (see CPU timing
   above), and MAME's flat 8 clocks per instruction runs it faster than the
