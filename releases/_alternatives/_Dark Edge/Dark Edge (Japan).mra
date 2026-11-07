@@ -5,6 +5,7 @@
     <mameversion>0289</mameversion>
     <year>1992</year>
     <manufacturer>Sega</manufacturer>
+    <rotation>horizontal</rotation>
     <players>2</players>
     <joystick>8</joystick>
     <buttons names="-,Weak Punch,Strong Punch,Start,Coin,Service,Test,Jump,Weak Kick,Strong Kick" default="Y,X,Start,Select,-,-,R,B,A"/>

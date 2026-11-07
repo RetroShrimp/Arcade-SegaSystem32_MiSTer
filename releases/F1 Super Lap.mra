@@ -5,6 +5,7 @@
     <mameversion>0289</mameversion>
     <year>1993</year>
     <manufacturer>Sega</manufacturer>
+    <rotation>horizontal</rotation>
     <players>1</players>
     <buttons names="Accelerator,Brake,Gear Up,Start,Coin,Service,Test,Gear Down,Overtake" default="A,B,R,Start,Select,-,-,L,X"/>
     <region>World</region>

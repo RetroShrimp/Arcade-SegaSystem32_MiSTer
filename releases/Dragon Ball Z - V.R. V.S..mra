@@ -5,6 +5,7 @@
     <mameversion>0289</mameversion>
     <year>1994</year>
     <manufacturer>Sega / Banpresto</manufacturer>
+    <rotation>horizontal</rotation>
     <players>2</players>
     <buttons names="Punch L,Punch R,Jump,Start,Coin,Service,Test" default="A,B,X,Start,Select,-,-"/>
     <region>Japan</region>

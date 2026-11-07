@@ -5,6 +5,7 @@
     <mameversion>0289</mameversion>
     <year>1995</year>
     <manufacturer>Capcom</manufacturer>
+    <rotation>horizontal</rotation>
     <players>1</players>
     <buttons names="Accelerator,Brake,Shift,Start,Coin,Service,Test" default="A,B,X,Start,Select,-,-"/>
     <region>Brazil</region>

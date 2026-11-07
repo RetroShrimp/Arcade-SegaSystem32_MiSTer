@@ -84,7 +84,10 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
 
 ## Installing
 
-1. Copy `releases/S32_YYYYMMDD.rbf` to `_Arcade/cores/` on the SD card.
+update_all installs the core for you. To install by hand:
+
+1. Copy `releases/Arcade-S32_YYYYMMDD.rbf` to `_Arcade/cores/` on the SD card.
+   update_all installs it as `S32_YYYYMMDD.rbf`; either name loads.
 2. Copy the `.mra` files in `releases/` to `_Arcade/`, and the folders in
    `releases/_alternatives/` to `_Arcade/_alternatives/`.
 3. Put the ROM zips in `games/mame/`: `ga2.zip` (plus `ga2u.zip` or
@@ -104,10 +107,11 @@ wiring, Holosseum's mirrored monitor), so there is nothing to set by hand.
 
 Loading a game takes about two seconds.
 
-**Keep only one `S32_*.rbf` in `_Arcade/cores/`.** The MRAs ask for the core
-by the prefix `S32`, so an older dated release left in that folder can load
-instead of the new one. Quote the file name you are running in any bug
-report.
+**Keep only one S32 core in `_Arcade/cores/`.** The MRAs ask for the core
+as `S32`, and MiSTer loads whichever `S32_*.rbf` or `Arcade-S32_*.rbf` file
+name sorts last. An older dated release left in that folder can load instead
+of the new one, and any `S32_*` name sorts after every `Arcade-S32_*` name.
+Quote the file name you are running in any bug report.
 
 ## Controls
 

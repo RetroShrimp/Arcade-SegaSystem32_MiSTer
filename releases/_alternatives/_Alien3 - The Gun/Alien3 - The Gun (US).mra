@@ -5,6 +5,7 @@
     <mameversion>0289</mameversion>
     <year>1993</year>
     <manufacturer>Sega</manufacturer>
+    <rotation>horizontal</rotation>
     <players>2</players>
     <buttons names="Fire,Bomb,-,-,Coin,Service,Test" default="A,B,Select,-,-"/>
 
