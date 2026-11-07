@@ -192,18 +192,40 @@ module s32_sys (
     end
 
     // fractional enables: target/clk ratios in 1/65536 steps
-    // 12.5/64.4318 = 0.19401 -> 12715 ; 6.25/64.4318 = 0.09700 -> 6357
-    // The 416-pixel mode's dot is the 315-5387's 8.053975 MHz (32.2159 MHz
-    // / 4, s32tech / segas32_v.cpp), exactly clk / 8 -> 8192. s32_video
-    // switches `wide` once per frame, in vblank.
-    logic [16:0] acc_pcm, acc_pix;
+    // 12.5/64.4318 = 0.19401 -> 12715
+    logic [16:0] acc_pcm;
     logic        cen_pcm, cen_pix;
     always_ff @(posedge clk) begin
         acc_pcm <= {1'b0, acc_pcm[15:0]} + 17'd12715;
         cen_pcm <= acc_pcm[16];
-        acc_pix <= {1'b0, acc_pix[15:0]} + (vid_wide ? 17'd8192 : 17'd6357);
-        cen_pix <= acc_pix[16];
-        ce_pix <= acc_pix[16];
+    end
+
+    // Dot enable (2026-11-06, GitHub issue #1: Direct Video). The 320 mode's
+    // dot is the board's 50 MHz crystal / 8 = 6.25 MHz (s32tech; Q5: the
+    // refresh footage-confirmed), a clock unrelated to the 32.2159 MHz one.
+    // The video output now leaves the core on a 50 MHz PLL clock at exactly
+    // 8 clocks a dot (s32_vidout), so this enable must run at EXACTLY that
+    // average rate or the output FIFO drifts. clk is the fractional PLL's
+    // 50 MHz * (10 + 1327535135/2^32) / 8 (fit report), so
+    //     6.25 MHz / clk = 2^32 / 44277211095      (exact)
+    // and a 36-bit accumulator stepping 2^32 and wrapping at 44277211095
+    // pulses at exactly 6.25 MHz (10 or 11 clk apart, 10.309 on average).
+    // The old 6357/65536 step ran 0.0016% slow (6.24990 MHz, 59.6364 Hz;
+    // the board predicts 59.6374 Hz). The 416-pixel mode's dot is the
+    // 315-5387's 8.053975 MHz (32.2159 MHz / 4, s32tech / segas32_v.cpp),
+    // exactly clk / 8. s32_video switches `wide` once per frame, in vblank.
+    localparam logic [35:0] PIX_MOD = 36'd44277211095;
+    localparam logic [35:0] PIX_STEP = 36'd4294967296;
+    logic [35:0] acc_pix  = '0;
+    logic [2:0]  div_pix8 = '0;
+    wire  [35:0] acc_pix_n = acc_pix + PIX_STEP;
+    wire         pix_wrap  = (acc_pix_n >= PIX_MOD);
+    wire         pix_tick  = vid_wide ? (div_pix8 == 3'd7) : pix_wrap;
+    always_ff @(posedge clk) begin
+        acc_pix  <= pix_wrap ? acc_pix_n - PIX_MOD : acc_pix_n;
+        div_pix8 <= div_pix8 + 3'd1;
+        cen_pix  <= pix_tick;
+        ce_pix   <= pix_tick;
     end
 
     // ------------------------------------------------------------ V60

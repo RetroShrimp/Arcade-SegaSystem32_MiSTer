@@ -171,6 +171,48 @@ pll pll
 	.locked(pll_locked)
 );
 
+// CLK_VIDEO (2026-11-06, GitHub issue #1: Direct Video). A second PLL on
+// the same 50 MHz pin, reconfigured at run time so the dot is exactly 8
+// video clocks in both screen modes: 50 MHz for the 320 mode (the board's
+// 50 MHz crystal / 8 = 6.25 MHz) and clk_sys's exact frequency for the 416
+// mode (32.2159 MHz / 4 = clk_sys / 8). In Direct Video the framework clocks
+// the HDMI transmitter with CLK_VIDEO directly (sys_top.v hdmi_clk_sw, whose
+// inputs must be PLL outputs, so a clock mux here is not an option); a
+// fractional dot enable there made lines 4,123/4,124 clocks long. Power-up
+// is the 416 settings (= clk_sys's PLL, proven); the controller below moves
+// it to 50 MHz as soon as it sees a 320-mode frame. pll_vid/pll_vid_0002.v
+// and rtl/video/s32_vidout.sv have the rest.
+wire        clk_vid, pll_vid_locked;
+wire        vid_wide;                         // 416-pixel frame (board, clk_sys)
+wire [63:0] vid_reconfig_to_pll, vid_reconfig_from_pll;
+wire        vid_cfg_ok;                       // pll_vid locked on the current mode's setting
+
+pll_vid pll_vid
+(
+	.refclk(CLK_50M),
+	.rst(1'b0),
+	.outclk_0(clk_vid),
+	.locked(pll_vid_locked),
+	.reconfig_to_pll(vid_reconfig_to_pll),
+	.reconfig_from_pll(vid_reconfig_from_pll)
+);
+
+// Mode -> PLL setting (C 10 / K 0 at 320, C 8 / K 1327535135 at 416) and
+// the DPRIO sequence that applies it: rtl/video/s32_pllrc.sv. That is a
+// one-counter transcription of the framework's altera_pll_reconfig_core
+// (sys/pll_cfg), bit-exact against it on the reconfig bus in sim/s32_pllrc,
+// at ~1/5 of its 555 ALMs; the full core cost the HDMI clock its margin.
+// vid_cfg_ok gates s32_vidout's reader.
+s32_vidpll_ctl vidpll_ctl
+(
+	.clk(CLK_50M),
+	.vid_wide(vid_wide),
+	.pll_locked(pll_vid_locked),
+	.vid_cfg_ok(vid_cfg_ok),
+	.reconfig_to_pll(vid_reconfig_to_pll),
+	.reconfig_from_pll(vid_reconfig_from_pll)
+);
+
 ///////////////////////   RESETS   ///////////////////////////////
 
 // rst_ctrl releases the SDRAM controller as soon as the PLL locks;
@@ -772,7 +814,6 @@ wire [31:0] adc_ain = (gun_harness | jp_cab) ? gun_ain
 //////////////////////   THE MACHINE   ///////////////////////////
 
 wire        de, hblank, vblank, hs, vs, ce_pix;
-wire        vid_wide;                         // 416-pixel frame (Burning Rival)
 wire [14:0] rgb;
 wire signed [15:0] audio_l, audio_r;
 
@@ -842,7 +883,7 @@ assign SDRAM_CLK = clk_sdram;
 
 //////////////////////   VIDEO / AUDIO   /////////////////////////
 
-assign CLK_VIDEO = clk_sys;
+assign CLK_VIDEO = clk_vid;          // pll_vid: 50 MHz (320) / 64.431818 MHz (416)
 
 // The board's composed picture (HUD overlay included in debug builds), 8 bits
 // per channel. It goes to VGA_* through the CRT Adjust stage at the end of
@@ -854,37 +895,57 @@ assign av_r = {rgb[4:0],   rgb[4:2]};
 assign av_g = {rgb[9:5],   rgb[9:7]};
 assign av_b = {rgb[14:10], rgb[14:12]};
 
-// CRT Adjust (H-Size / H-Position / V-Shift), rtl/video/s32_crt_adjust.sv.
+// clk_sys -> CLK_VIDEO (rtl/video/s32_vidout.sv): the composed stream crosses
+// into the video clock through a 32-entry dual-clock buffer and leaves it at
+// exactly one dot every 8 video clocks, so every line is 3,200 clocks in both
+// modes. Everything from here to the pins runs on CLK_VIDEO.
+wire       vo_ce, vo_hs, vo_vs, vo_de, vo_vblank, vo_wide;
+wire [7:0] vo_r, vo_g, vo_b;
+wire [7:0] vo_resync;
+s32_vidout vidout
+(
+	.clk_sys(clk_sys), .ce_in(ce_pix),
+	.r_in(av_r), .g_in(av_g), .b_in(av_b),
+	.hs_in(hs), .vs_in(vs), .de_in(de), .vblank_in(vblank), .wide_in(vid_wide),
+	.clk_vid(clk_vid), .vid_ok(vid_cfg_ok),
+	.ce_out(vo_ce), .r_out(vo_r), .g_out(vo_g), .b_out(vo_b),
+	.hs_out(vo_hs), .vs_out(vo_vs), .de_out(vo_de), .vblank_out(vo_vblank),
+	.wide_out(vo_wide), .resync_cnt(vo_resync)
+);
+
+// CRT Adjust (H-Size / H-Position / V-Shift), rtl/video/s32_crt_adjust.sv,
+// on CLK_VIDEO after the crossing (a dot = exactly 8 clocks, PIX_INC 8192).
 // Analog geometry only: nothing the game can observe changes. With the stage
-// On the output pixel rate is its read enable, not ce_pix, so CE_PIXEL and
-// the scaler's DE follow it; with it Off (`crt_act` = 0) every pin below is
-// the native stream exactly as before the stage existed. The engine's own
-// bypass is never used for that, because it would add two pixels of latency.
-// The stage is built for the 320-mode raster (400 dots, the 6.25 MHz rate
-// table); a 416-pixel frame (vid_wide, Burning Rival) is passed through
-// native, with the setting kept for the next 320-mode frame.
+// On the output pixel rate is its read enable, not the native dot enable, so
+// CE_PIXEL and the scaler's DE follow it; with it Off (`crt_act` = 0) every
+// pin below is the native stream from s32_vidout. The engine's own bypass is
+// never used for that, because it would add two pixels of latency. The stage
+// is built for the 320-mode raster (400 dots); a 416-pixel frame (vid_wide,
+// Burning Rival) is passed through native, with the setting kept for the
+// next 320-mode frame. The OSD fields come from hps_io's clk_sys status
+// word: static settings, sampled by the stage on its dot enable.
 wire       crt_act, crt_hs, crt_vs, crt_de, crt_ce;
 wire [7:0] crt_r, crt_g, crt_b;
 
 s32_crt_adjust crt_adjust
 (
-	.clk(clk_sys), .ce_pix(ce_pix),
-	.osd_on(crt_enable & ~vid_wide),
+	.clk(clk_vid), .ce_pix(vo_ce),
+	.osd_on(crt_enable & ~vo_wide),
 	.osd_hsize(status[40:36]), .osd_hpos(status[47:41]), .osd_vshift(status[53:48]),
-	.r_in(av_r), .g_in(av_g), .b_in(av_b),
-	.hs_in(hs), .vs_in(vs), .de_in(de), .vblank_in(vblank),
+	.r_in(vo_r), .g_in(vo_g), .b_in(vo_b),
+	.hs_in(vo_hs), .vs_in(vo_vs), .de_in(vo_de), .vblank_in(vo_vblank),
 	.active(crt_act),
 	.r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
 	.hs_out(crt_hs), .vs_out(crt_vs), .de_out(crt_de),
 	.ce_out(crt_ce)
 );
 
-assign CE_PIXEL = crt_act ? crt_ce : ce_pix;
-assign VGA_R    = crt_act ? crt_r  : av_r;
-assign VGA_G    = crt_act ? crt_g  : av_g;
-assign VGA_B    = crt_act ? crt_b  : av_b;
-assign VGA_HS   = crt_act ? crt_hs : hs;
-assign VGA_VS   = crt_act ? crt_vs : vs;
+assign CE_PIXEL = crt_act ? crt_ce : vo_ce;
+assign VGA_R    = crt_act ? crt_r  : vo_r;
+assign VGA_G    = crt_act ? crt_g  : vo_g;
+assign VGA_B    = crt_act ? crt_b  : vo_b;
+assign VGA_HS   = crt_act ? crt_hs : vo_hs;
+assign VGA_VS   = crt_act ? crt_vs : vo_vs;
 
 // Scale (O[34:33]) onto video_freak's SCALE code (sys/video_freak.sv: 0
 // normal, 1 V-integer, 2 HV-Integer-, 3 HV-Integer+, 4 HV-Integer). Menu
@@ -908,7 +969,7 @@ video_freak video_freak
 	.VGA_DE     (VGA_DE),
 	.VIDEO_ARX  (VIDEO_ARX),
 	.VIDEO_ARY  (VIDEO_ARY),
-	.VGA_DE_IN  (crt_act ? crt_de : de),
+	.VGA_DE_IN  (crt_act ? crt_de : vo_de),
 	.ARX        (arx),
 	.ARY        (ary),
 	.CROP_SIZE  (12'd0),

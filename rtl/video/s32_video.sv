@@ -30,8 +30,8 @@
 module s32_video (
     input  logic        clk,
     input  logic        rst,
-    input  logic        cen_pix,      // pixel enable: clk_sys x 6357/65536
-                                      // (6.25 MHz) at 320 wide, x 8192/65536
+    input  logic        cen_pix,      // pixel enable: exactly 6.25 MHz at 320
+                                      // wide (10 or 11 clk apart), clk_sys / 8
                                       // at 416 (s32_sys acc_pix)
     input  logic        cen_ren,      // render-side enable (memory ready);
                                       // never stops raster, scanout or CPU

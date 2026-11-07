@@ -13,28 +13,26 @@
 // stream straight through on `active` = 0, so a default build drives VGA_*,
 // CE_PIXEL and the scaler's DE exactly as before this stage existed.
 //
-// ---------------- the read rate: why a 17-bit accumulator ------------------
-// Upstream steps its read period in quarter clocks because its reference
-// core's pixel is a whole 16 clk_sys cycles. Ours is not a whole number: the
-// 6.25 MHz dot enable is a phase accumulator on the 64.4318 MHz clk_sys
-// (s32_sys: acc_pix += 6357 per clk, carry = ce_pix, 10.31 clk per dot), so
-// no integer period matches it and the H-Size 0 setting would already squeeze
-// the picture. The read enable here is the same accumulator form with a
-// per-setting increment
+// ---------------- the read rate: a 17-bit accumulator ----------------------
+// Since 2026-11-06 the stage runs on CLK_VIDEO after s32_vidout, where the
+// dot is exactly 8 clocks (50 MHz video clock in the 320 mode, GitHub issue
+// #1); it used to run on clk_sys, where the 6.25 MHz dot was 10.31 clocks.
+// Upstream steps its read period in quarter clocks of a whole-clock pixel;
+// this stage keeps its own accumulator form, with a per-setting increment
 //
-//     rd_inc(h) = round(6357 * 64 / (64 + h))      h = -16 .. +15
+//     rd_inc(h) = round(PIX_INC * 64 / (64 + h))      h = -16 .. +15
 //
-// i.e. a read period of (64 + h)/64 native dots: h = 0 is the native rate
-// exactly, and each click is 1/64 = 1.56% of a pixel, the same step the
-// upstream menu promises. The table is literal (Quartus 17 constant-folds it
-// either way; a literal leaves nothing to elaboration); sim/s32_crt_adjust
-// checks every entry against the formula. PIX_INC below must equal s32_sys's
-// acc_pix increment — the bench asserts the native-rate entry against it.
-// The accumulator restarts on the rise of the engine's hs_ref_out, never the
-// raw HSync (upstream's one wiring rule).
+// PIX_INC = 8192 (one dot = 8 clk = 8192/65536), i.e. a read period of
+// (64 + h)/64 native dots: h = 0 is the native rate exactly (every read
+// exactly 8 clocks, the same stream as the stage Off), and each click is
+// 1/64 = 1.56% of a pixel, the same step the upstream menu promises. The
+// table is literal (Quartus 17 constant-folds it either way; a literal
+// leaves nothing to elaboration); sim/s32_crt_adjust checks every entry
+// against the formula. The accumulator restarts on the rise of the engine's
+// hs_ref_out, never the raw HSync (upstream's one wiring rule).
 //
-// Pixel durations alternate 10/11 clk_sys exactly as the native ce_pix does,
-// so the stage adds no jitter the native output does not already have.
+// At H-Size 0 every read is exactly 8 clocks, so the stage adds no jitter;
+// other H-Size settings are non-integer periods by design.
 //
 // ---------------- HPOS_MODE: CONTENTSHIFT -----------------------------------
 // Raster (s32_video, 320 mode): 400 dots per line, active 0..319, HSync
@@ -77,7 +75,7 @@
 module s32_crt_adjust #(
     parameter int H_TOTAL  = 400,     // ce_pix per line (s32_video HTOTAL)
     parameter int V_TOTAL  = 262,     // lines per frame (s32_video VTOTAL)
-    parameter int PIX_INC  = 6357     // s32_sys acc_pix increment (1/65536 clk)
+    parameter int PIX_INC  = 8192     // the dot in 1/65536 clk: exactly 8 clk (s32_vidout)
 ) (
     input  logic       clk,
     input  logic       ce_pix,
@@ -119,22 +117,22 @@ module s32_crt_adjust #(
     logic [16:0] rd_inc;
     always_comb
         case (hsize_q)
-            5'd0:  rd_inc = 17'(PIX_INC); 5'd16: rd_inc = 17'd8476;
-            5'd1:  rd_inc = 17'd6259;   5'd17: rd_inc = 17'd8303;
-            5'd2:  rd_inc = 17'd6164;   5'd18: rd_inc = 17'd8137;
-            5'd3:  rd_inc = 17'd6072;   5'd19: rd_inc = 17'd7977;
-            5'd4:  rd_inc = 17'd5983;   5'd20: rd_inc = 17'd7824;
-            5'd5:  rd_inc = 17'd5896;   5'd21: rd_inc = 17'd7676;
-            5'd6:  rd_inc = 17'd5812;   5'd22: rd_inc = 17'd7534;
-            5'd7:  rd_inc = 17'd5730;   5'd23: rd_inc = 17'd7397;
-            5'd8:  rd_inc = 17'd5651;   5'd24: rd_inc = 17'd7265;
-            5'd9:  rd_inc = 17'd5573;   5'd25: rd_inc = 17'd7138;
-            5'd10: rd_inc = 17'd5498;   5'd26: rd_inc = 17'd7015;
-            5'd11: rd_inc = 17'd5425;   5'd27: rd_inc = 17'd6896;
-            5'd12: rd_inc = 17'd5353;   5'd28: rd_inc = 17'd6781;
-            5'd13: rd_inc = 17'd5284;   5'd29: rd_inc = 17'd6670;
-            5'd14: rd_inc = 17'd5216;   5'd30: rd_inc = 17'd6562;
-            5'd15: rd_inc = 17'd5150;   default: rd_inc = 17'd6458;   // 31
+            5'd0:  rd_inc = 17'(PIX_INC); 5'd16: rd_inc = 17'd10923;
+            5'd1:  rd_inc = 17'd8066;   5'd17: rd_inc = 17'd10700;
+            5'd2:  rd_inc = 17'd7944;   5'd18: rd_inc = 17'd10486;
+            5'd3:  rd_inc = 17'd7825;   5'd19: rd_inc = 17'd10280;
+            5'd4:  rd_inc = 17'd7710;   5'd20: rd_inc = 17'd10082;
+            5'd5:  rd_inc = 17'd7598;   5'd21: rd_inc = 17'd9892;
+            5'd6:  rd_inc = 17'd7490;   5'd22: rd_inc = 17'd9709;
+            5'd7:  rd_inc = 17'd7384;   5'd23: rd_inc = 17'd9533;
+            5'd8:  rd_inc = 17'd7282;   5'd24: rd_inc = 17'd9362;
+            5'd9:  rd_inc = 17'd7182;   5'd25: rd_inc = 17'd9198;
+            5'd10:  rd_inc = 17'd7085;  5'd26: rd_inc = 17'd9039;
+            5'd11:  rd_inc = 17'd6991;  5'd27: rd_inc = 17'd8886;
+            5'd12:  rd_inc = 17'd6899;  5'd28: rd_inc = 17'd8738;
+            5'd13:  rd_inc = 17'd6809;  5'd29: rd_inc = 17'd8595;
+            5'd14:  rd_inc = 17'd6722;  5'd30: rd_inc = 17'd8456;
+            5'd15:  rd_inc = 17'd6637;  default: rd_inc = 17'd8322;   // 31
         endcase
 
     wire  hs_ref;

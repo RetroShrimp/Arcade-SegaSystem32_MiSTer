@@ -139,3 +139,16 @@ set_multicycle_path -setup -end 2 \
 set_multicycle_path -hold -end 1 \
   -from [get_clocks {SDRAM_CLK}] \
   -to   [get_clocks {*|pll|pll_inst|altera_pll_i|general?0?.gpll~PLL_OUTPUT_COUNTER|divclk}]
+
+# ---- CLK_VIDEO: the video PLL is asynchronous to everything (2026-11-06) ----
+# pll_vid (rtl/pll_vid, GitHub issue #1) is a second PLL on the same 50 MHz
+# pin, reconfigured at run time between 50 MHz and clk_sys's frequency. Its
+# instance name does not match sys_top.sdc's core-PLL group
+# (*|pll|pll_inst|...), so it is grouped here, alone: a single -group is
+# asynchronous to every other clock. Every path between it and clk_sys is
+# synchronized by construction: s32_vidout's Gray write pointer (two flops)
+# and its dual-clock RAM, read at least MIN_OCC = 2 entries (16 video
+# clocks) behind that pointer; vid_cfg_ok (CLK_50M) through two flops; and
+# the CRT Adjust OSD fields, static settings sampled on the dot enable.
+set_clock_groups -asynchronous \
+  -group [get_clocks {*|pll_vid|pll_vid_inst|altera_pll_i|*|divclk}]

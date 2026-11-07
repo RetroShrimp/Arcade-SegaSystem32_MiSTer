@@ -456,6 +456,8 @@ module s32_v60bus (
         etmg[8]='d0; etmg[9]='d0; etmg[10]='d0; etmg[11]='d0;
         etmg[12]='d3; etmg[13]='d2; etmg[14]='d0; etmg[15]='d0;
     end
+    // ETMG_LONG_W_OVR (sim only, 2026-11-06): A/B the long-cycle wait count
+    // (Q56) without editing this line; synthesis never defines it
     localparam logic [1:0] ETMG_LONG_W = 2'd1;
     // mem_addr is the bus unit's registered f_addr, stable from T1 on
     function automatic logic [1:0] etmg_xs(input logic [1:0] code);

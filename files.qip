@@ -8,6 +8,7 @@ set_global_assignment -name SDC_FILE S32.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE S32.sv
 
 set_global_assignment -name QIP_FILE rtl/pll.qip
+set_global_assignment -name QIP_FILE rtl/pll_vid.qip
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sys32/s32_sys.sv
@@ -54,6 +55,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_nbg_rowscroll_live.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_nbg_zoom_live.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/s32_vidout.sv
+set_global_assignment -library "pll_cfg" -name SYSTEMVERILOG_FILE rtl/video/s32_pllrc.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_soundtop.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/s32_sound.sv
